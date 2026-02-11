@@ -56,8 +56,84 @@ func _ensure_initialized() -> void:
 
 
 ## Parse @export properties and group them by @export_group priority.
+## Checks for .sync.tres metadata override first (from Sync Dashboard editor tool).
+## Falls back to @export_group() annotation parsing if no metadata exists.
 ## Returns: {priority_int: [prop_names]}
 func _parse_property_priorities() -> Dictionary:
+	# Check for .sync.tres metadata override (set via Sync Dashboard)
+	var metadata := _get_sync_metadata()
+	if metadata:
+		return _parse_from_metadata(metadata)
+
+	# Fall back to @export_group() annotation parsing
+	return _parse_from_annotations()
+
+
+## Try to load .sync.tres metadata for this component via SyncMetadataRegistry.
+func _get_sync_metadata():  # -> ComponentSyncMetadata or null
+	var script := get_script()
+	if script == null:
+		return null
+	var script_path: String = script.resource_path
+	if script_path == "":
+		return null
+
+	# SyncMetadataRegistry is a GDScript class with static methods.
+	# Load it directly since GDScript class_name globals aren't always resolvable
+	# from a base class context (SyncComponent doesn't know about editor classes).
+	var registry_path := "res://addons/gecs_network/editor/sync_metadata_registry.gd"
+	if not ResourceLoader.exists(registry_path):
+		return null
+	var registry_script := load(registry_path) as GDScript
+	if registry_script == null:
+		return null
+	return registry_script.get_component_metadata(script_path)
+
+
+## Parse priorities from .sync.tres metadata.
+## Only overrides properties that are explicitly listed in the metadata.
+## Properties not in metadata fall through to annotation parsing.
+func _parse_from_metadata(metadata) -> Dictionary:
+	if not metadata.has_method("get_priority_map"):
+		return _parse_from_annotations()
+	var metadata_map: Dictionary = metadata.get_priority_map()
+
+	# If metadata covers all properties, use it directly
+	if not metadata_map.is_empty():
+		# Get annotation-based result as baseline
+		var annotation_result := _parse_from_annotations()
+
+		# Override with metadata values
+		var metadata_props := {}
+		for priority in metadata_map.keys():
+			for prop_name in metadata_map[priority]:
+				metadata_props[prop_name] = true
+
+		# Remove overridden properties from annotation result
+		for priority in annotation_result.keys():
+			var filtered: Array = []
+			for prop_name in annotation_result[priority]:
+				if prop_name not in metadata_props:
+					filtered.append(prop_name)
+			if filtered.is_empty():
+				annotation_result.erase(priority)
+			else:
+				annotation_result[priority] = filtered
+
+		# Merge metadata priorities into result
+		for priority in metadata_map.keys():
+			if priority not in annotation_result:
+				annotation_result[priority] = []
+			annotation_result[priority].append_array(metadata_map[priority])
+
+		return annotation_result
+
+	# Empty metadata properties = use annotations entirely
+	return _parse_from_annotations()
+
+
+## Original annotation-based parsing: reads @export_group() from script property list.
+func _parse_from_annotations() -> Dictionary:
 	var result: Dictionary = {}
 	var current_group: String = "HIGH"  # Default priority
 
