@@ -11,8 +11,10 @@ extends EditorPlugin
 ## - CN_NetworkIdentity: Entity ownership component
 ## - CN_SyncEntity: Native sync configuration component
 ## - Marker components: CN_LocalAuthority, CN_RemoteEntity, CN_ServerOwned
+## - Sync Dashboard: Editor dock panel for viewing/editing network sync config
 
 const PLUGIN_NAME = "GECSNetwork"
+const DASHBOARD_SCENE = "res://addons/gecs_network/editor/sync_dashboard.tscn"
 
 # Icon paths (optional - gracefully degrades if not present)
 const ICON_PATH = "res://addons/gecs_network/icons/"
@@ -33,6 +35,9 @@ const CUSTOM_TYPES = {
 	}
 }
 
+# Dashboard dock panel (editor-only)
+var _dashboard: Control
+
 
 func _enter_tree() -> void:
 	# Register custom types
@@ -48,10 +53,23 @@ func _enter_tree() -> void:
 		var icon = _load_icon(type_data["icon"])
 		add_custom_type(type_name, type_data["base"], script, icon)
 
-	print("[%s] Plugin enabled - NetworkSync, SyncConfig registered" % PLUGIN_NAME)
+	# Register Sync Dashboard dock panel
+	if ResourceLoader.exists(DASHBOARD_SCENE):
+		_dashboard = load(DASHBOARD_SCENE).instantiate()
+		if _dashboard.has_method("set_editor_interface"):
+			_dashboard.set_editor_interface(get_editor_interface())
+		add_control_to_dock(DOCK_SLOT_RIGHT_UL, _dashboard)
+
+	print("[%s] Plugin enabled - NetworkSync, SyncConfig, SyncDashboard registered" % PLUGIN_NAME)
 
 
 func _exit_tree() -> void:
+	# Remove dashboard dock
+	if _dashboard:
+		remove_control_from_docks(_dashboard)
+		_dashboard.queue_free()
+		_dashboard = null
+
 	# Remove custom types
 	for type_name in CUSTOM_TYPES.keys():
 		remove_custom_type(type_name)
