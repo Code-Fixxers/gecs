@@ -53,8 +53,32 @@ class EntityInfo:
 var components: Array = []  # Array of ComponentInfo
 var entities: Array = []  # Array of EntityInfo
 
-## Directories to scan (configurable)
-var scan_directories: Array[String] = ["res://game/"]
+## Directories to scan (configurable).
+## Defaults to scanning the entire project, excluding addons and hidden directories.
+var scan_directories: Array[String] = ["res://"]
+
+## Directories to skip during scanning.
+var skip_directories: Array[String] = ["res://addons/", "res://.godot/"]
+
+## Pre-compiled regex patterns (avoid recompiling per call)
+var _component_ref_regex: RegEx
+var _sync_entity_config_regex: RegEx
+var _custom_property_regex: RegEx
+var _network_identity_regex: RegEx
+
+
+func _init() -> void:
+	_component_ref_regex = RegEx.new()
+	_component_ref_regex.compile("\\b(C[N]?_[A-Za-z0-9]+)\\b")
+
+	_sync_entity_config_regex = RegEx.new()
+	_sync_entity_config_regex.compile("CN_SyncEntity\\.new\\(\\s*(true|false)\\s*,\\s*(true|false)\\s*,\\s*(true|false)\\s*\\)")
+
+	_custom_property_regex = RegEx.new()
+	_custom_property_regex.compile("custom_properties\\.append\\(\"([^\"]+)\"\\)")
+
+	_network_identity_regex = RegEx.new()
+	_network_identity_regex.compile("CN_NetworkIdentity\\.new\\(\\s*(\\d+)\\s*\\)")
 
 
 ## Scan the project for all components and entities.
@@ -99,6 +123,11 @@ func _find_gd_files(directories: Array[String]) -> Array[String]:
 
 
 func _scan_directory_recursive(path: String, results: Array[String]) -> void:
+	# Skip excluded directories
+	for skip_dir in skip_directories:
+		if path.begins_with(skip_dir):
+			return
+
 	var dir := DirAccess.open(path)
 	if dir == null:
 		return
@@ -192,7 +221,6 @@ func _scan_entity(path: String, class_name_str: String, script: GDScript) -> Ent
 
 	# Find component class names referenced in define_components()
 	var in_define := false
-	var brace_depth := 0
 	var lines := source.split("\n")
 
 	for line in lines:
@@ -210,9 +238,9 @@ func _scan_entity(path: String, class_name_str: String, script: GDScript) -> Ent
 			# Look for component references: C_ClassName.new(), C_ClassName (variable)
 			_extract_component_refs(stripped, info)
 
-	# Check for CN_SyncEntity and CN_NetworkIdentity
-	info.has_sync_entity = "CN_SyncEntity" in info.component_names or source.find("CN_SyncEntity") != -1
-	info.has_network_identity = "CN_NetworkIdentity" in info.component_names or source.find("CN_NetworkIdentity") != -1
+	# Check for CN_SyncEntity and CN_NetworkIdentity based on parsed component refs
+	info.has_sync_entity = "CN_SyncEntity" in info.component_names
+	info.has_network_identity = "CN_NetworkIdentity" in info.component_names
 
 	# Parse CN_SyncEntity configuration from source
 	_parse_sync_entity_config(source, info)
@@ -227,30 +255,24 @@ func _scan_entity(path: String, class_name_str: String, script: GDScript) -> Ent
 ## Extract component class name references from a line of source code.
 func _extract_component_refs(line: String, info: EntityInfo) -> void:
 	# Match patterns like: C_Health.new(), CN_SyncEntity.new(), C_Collider.enemy_detection()
-	var regex := RegEx.new()
-	regex.compile("\\b(C[N]?_[A-Za-z0-9]+)\\b")
-	var matches := regex.search_all(line)
+	var matches := _component_ref_regex.search_all(line)
 	for m in matches:
-		var name := m.get_string(1)
-		if name not in info.component_names:
-			info.component_names.append(name)
+		var comp_name := m.get_string(1)
+		if comp_name not in info.component_names:
+			info.component_names.append(comp_name)
 
 
 ## Parse CN_SyncEntity constructor arguments from source code.
 func _parse_sync_entity_config(source: String, info: EntityInfo) -> void:
 	# Look for CN_SyncEntity.new(true, false, false) pattern
-	var regex := RegEx.new()
-	regex.compile("CN_SyncEntity\\.new\\(\\s*(true|false)\\s*,\\s*(true|false)\\s*,\\s*(true|false)\\s*\\)")
-	var m := regex.search(source)
+	var m := _sync_entity_config_regex.search(source)
 	if m:
 		info.sync_position = m.get_string(1) == "true"
 		info.sync_rotation = m.get_string(2) == "true"
 		info.sync_velocity = m.get_string(3) == "true"
 
 	# Look for custom_properties.append("...") patterns
-	var custom_regex := RegEx.new()
-	custom_regex.compile("custom_properties\\.append\\(\"([^\"]+)\"\\)")
-	var custom_matches := custom_regex.search_all(source)
+	var custom_matches := _custom_property_regex.search_all(source)
 	for cm in custom_matches:
 		var prop := cm.get_string(1)
 		if prop not in info.custom_properties:
@@ -259,9 +281,7 @@ func _parse_sync_entity_config(source: String, info: EntityInfo) -> void:
 
 ## Parse CN_NetworkIdentity peer_id from source code.
 func _parse_network_identity(source: String, info: EntityInfo) -> void:
-	var regex := RegEx.new()
-	regex.compile("CN_NetworkIdentity\\.new\\(\\s*(\\d+)\\s*\\)")
-	var m := regex.search(source)
+	var m := _network_identity_regex.search(source)
 	if m:
 		info.peer_id_value = m.get_string(1).to_int()
 

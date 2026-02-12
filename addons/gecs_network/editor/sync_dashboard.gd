@@ -323,14 +323,14 @@ func _populate_component_tree() -> void:
 				child.set_text(3, CodebaseScanner.priority_to_rate(prop_data.priority))
 
 			# Add action buttons
-			item.add_button(0, _get_theme_icon("Script"), 0, false, "Open Script")
-			item.add_button(0, _get_theme_icon("Save"), 1, false, "Save .sync.tres")
+			_add_tree_button(item, 0, "Script", 0, "Open Script")
+			_add_tree_button(item, 0, "Save", 1, "Save .sync.tres")
 			item.set_metadata(0, comp)
 		else:
 			item.set_text(1, "--")
 			item.set_text(2, "")
 			item.set_text(3, "--")
-			item.add_button(0, _get_theme_icon("Script"), 0, false, "Open Script")
+			_add_tree_button(item, 0, "Script", 0, "Open Script")
 			item.set_metadata(0, comp)
 
 		# Collapse by default
@@ -450,9 +450,9 @@ func _populate_entity_tree() -> void:
 				child.set_text(2, "Sync" if is_synced else "")
 
 		# Action buttons
-		item.add_button(0, _get_theme_icon("Script"), 0, false, "Open Script")
-		item.add_button(0, _get_theme_icon("CodeEdit"), 1, false, "Preview Code")
-		item.add_button(0, _get_theme_icon("Save"), 2, false, "Save .sync.tres")
+		_add_tree_button(item, 0, "Script", 0, "Open Script")
+		_add_tree_button(item, 0, "CodeEdit", 1, "Preview Code")
+		_add_tree_button(item, 0, "Save", 2, "Save .sync.tres")
 		item.set_metadata(0, ent)
 		item.collapsed = true
 
@@ -560,6 +560,15 @@ func _open_script(path: String) -> void:
 
 func _get_theme_icon(icon_name: String) -> Texture2D:
 	if _editor_interface:
-		return _editor_interface.get_editor_theme().get_icon(icon_name, "EditorIcons")
-	# Fallback: return null, buttons will show text only
+		var theme := _editor_interface.get_editor_theme()
+		if theme and theme.has_icon(icon_name, "EditorIcons"):
+			return theme.get_icon(icon_name, "EditorIcons")
 	return null
+
+
+## Safely add a button to a TreeItem, skipping if the icon cannot be loaded.
+## TreeItem.add_button() requires a non-null Texture2D.
+func _add_tree_button(item: TreeItem, column: int, icon_name: String, id: int, tooltip: String) -> void:
+	var icon := _get_theme_icon(icon_name)
+	if icon:
+		item.add_button(column, icon, id, false, tooltip)

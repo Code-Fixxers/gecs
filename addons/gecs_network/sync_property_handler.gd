@@ -372,7 +372,7 @@ func poll_sync_components_for_priority(priority: int) -> void:
 
 ## Shared handler for both reliable and unreliable syncs
 func handle_apply_sync_data(data: Dictionary) -> void:
-	var sender_id = _ns.multiplayer.get_remote_sender_id()
+	var sender_id = _ns.net_adapter.multiplayer.get_remote_sender_id()
 	var prefix = "SERVER" if _ns.net_adapter.is_server() else "CLIENT"
 
 	# Log incoming sync data at DEBUG level

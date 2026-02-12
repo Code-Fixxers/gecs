@@ -356,7 +356,7 @@ func handle_request_server_time(ping_id: int) -> void:
 	if not _ns.net_adapter.is_server():
 		return
 	var server_time = Time.get_ticks_msec() / 1000.0
-	_ns._respond_server_time.rpc_id(_ns.multiplayer.get_remote_sender_id(), ping_id, server_time)
+	_ns._respond_server_time.rpc_id(_ns.net_adapter.multiplayer.get_remote_sender_id(), ping_id, server_time)
 
 
 func handle_respond_server_time(ping_id: int, server_time: float) -> void:
@@ -393,6 +393,9 @@ func on_synchronizer_synchronized(entity_name: String) -> void:
 
 ## Process entity count diagnostics to track desync between peers
 func process_entity_count_diagnostics(delta: float) -> void:
+	if not _ns.debug_logging:
+		return
+
 	_ns._entity_count_timer += delta
 	if _ns._entity_count_timer < _ns.ENTITY_COUNT_INTERVAL:
 		return

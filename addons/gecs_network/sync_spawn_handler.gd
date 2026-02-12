@@ -397,7 +397,7 @@ func handle_add_component(
 			)
 		return
 
-	var sender_id = _ns.multiplayer.get_remote_sender_id()
+	var sender_id = _ns.net_adapter.multiplayer.get_remote_sender_id()
 
 	var entity = _ns._world.entity_id_registry.get(entity_id)
 	if not entity:
@@ -468,7 +468,7 @@ func handle_add_component(
 
 
 func handle_remove_component(entity_id: String, comp_type: String) -> void:
-	var sender_id = _ns.multiplayer.get_remote_sender_id()
+	var sender_id = _ns.net_adapter.multiplayer.get_remote_sender_id()
 
 	var entity = _ns._world.entity_id_registry.get(entity_id)
 	if not entity:
