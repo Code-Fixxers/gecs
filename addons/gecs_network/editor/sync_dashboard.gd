@@ -4,7 +4,7 @@ extends Control
 ##
 ## Displays all SyncComponent subclasses with their property priorities,
 ## all Entity subclasses with their sync patterns, and global config settings.
-## Designers can edit settings and save as .sync.tres metadata files.
+## Designers can edit priorities inline and save as .sync.tres metadata files.
 
 const CodebaseScanner = preload("res://addons/gecs_network/editor/codebase_scanner.gd")
 const CodeGenerator = preload("res://addons/gecs_network/editor/code_generator.gd")
@@ -12,9 +12,10 @@ const CodeGenerator = preload("res://addons/gecs_network/editor/code_generator.g
 var _scanner: RefCounted  # CodebaseScanner instance
 var _editor_interface: EditorInterface
 
-# UI references (set in _ready from scene tree, or built programmatically)
+# UI references
 var _tab_container: TabContainer
 var _scan_button: Button
+var _summary_label: Label
 
 # Components tab
 var _component_search: LineEdit
@@ -22,9 +23,12 @@ var _component_filter: OptionButton
 var _component_tree: Tree
 
 # Entities tab
+var _entity_search: LineEdit
+var _entity_filter: OptionButton
 var _entity_tree: Tree
 
 # Config tab
+var _scan_dirs_edit: TextEdit
 var _skip_list_edit: TextEdit
 var _model_ready_edit: LineEdit
 var _transform_edit: LineEdit
@@ -36,9 +40,22 @@ var _export_button: Button
 var _code_popup: AcceptDialog
 var _code_text: TextEdit
 
-# Priority option labels
-const PRIORITY_OPTIONS := ["REALTIME", "HIGH", "MEDIUM", "LOW", "LOCAL"]
-const PRIORITY_VALUES := [0, 1, 2, 3, -1]
+# Priority option labels (used for inline dropdowns)
+const PRIORITY_OPTIONS_STR := "REALTIME,HIGH,MEDIUM,LOW,LOCAL"
+const PRIORITY_DROPDOWN_TO_VALUE := [0, 1, 2, 3, -1]
+const PRIORITY_VALUE_TO_DROPDOWN := {0: 0, 1: 1, 2: 2, 3: 3, -1: 4}
+
+# Colors for visual status
+var _color_synced := Color(0.4, 0.9, 0.4)      # Green - actively synced
+var _color_local := Color(0.6, 0.6, 0.6)        # Gray - local only
+var _color_spawn_only := Color(0.5, 0.75, 1.0)  # Blue - spawn sync
+var _color_continuous := Color(0.4, 0.9, 0.4)   # Green - continuous sync
+var _color_none := Color(0.6, 0.6, 0.6)         # Gray - no sync
+var _color_modified := Color(1.0, 0.85, 0.3)    # Yellow - unsaved changes
+
+# Track unsaved changes per component/entity script_path
+var _dirty_components: Dictionary = {}  # script_path -> true
+var _dirty_entities: Dictionary = {}    # script_path -> true
 
 
 func _ready() -> void:
@@ -52,7 +69,7 @@ func set_editor_interface(ei: EditorInterface) -> void:
 
 ## Build the entire UI programmatically for reliable control references.
 func _build_ui() -> void:
-	# Main layout — use size flags for dock panel (anchors don't apply in docks)
+	# Main layout
 	var vbox := VBoxContainer.new()
 	vbox.size_flags_horizontal = SIZE_EXPAND_FILL
 	vbox.size_flags_vertical = SIZE_EXPAND_FILL
@@ -75,6 +92,13 @@ func _build_ui() -> void:
 	_scan_button.tooltip_text = "Scan project for components and entities"
 	_scan_button.pressed.connect(_on_scan_pressed)
 	header.add_child(_scan_button)
+
+	# Summary label
+	_summary_label = Label.new()
+	_summary_label.text = "Press Scan to discover components and entities."
+	_summary_label.add_theme_font_size_override("font_size", 11)
+	_summary_label.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
+	vbox.add_child(_summary_label)
 
 	# Tab container
 	_tab_container = TabContainer.new()
@@ -138,13 +162,14 @@ func _build_components_tab() -> void:
 	_component_tree.column_titles_visible = true
 	_component_tree.set_column_expand(0, true)
 	_component_tree.set_column_expand(1, false)
-	_component_tree.set_column_custom_minimum_width(1, 90)
+	_component_tree.set_column_custom_minimum_width(1, 100)
 	_component_tree.set_column_expand(2, false)
 	_component_tree.set_column_custom_minimum_width(2, 50)
 	_component_tree.set_column_expand(3, false)
 	_component_tree.set_column_custom_minimum_width(3, 60)
 	_component_tree.hide_root = true
 	_component_tree.button_clicked.connect(_on_component_tree_button)
+	_component_tree.item_edited.connect(_on_component_tree_item_edited)
 	panel.add_child(_component_tree)
 
 
@@ -152,6 +177,31 @@ func _build_entities_tab() -> void:
 	var panel := VBoxContainer.new()
 	panel.name = "Entities"
 	_tab_container.add_child(panel)
+
+	# Search and filter row (matching component tab)
+	var filter_row := HBoxContainer.new()
+	panel.add_child(filter_row)
+
+	var search_label := Label.new()
+	search_label.text = "Search:"
+	filter_row.add_child(search_label)
+
+	_entity_search = LineEdit.new()
+	_entity_search.placeholder_text = "Filter by name..."
+	_entity_search.size_flags_horizontal = SIZE_EXPAND_FILL
+	_entity_search.text_changed.connect(_on_entity_search_changed)
+	filter_row.add_child(_entity_search)
+
+	var filter_label := Label.new()
+	filter_label.text = "Show:"
+	filter_row.add_child(filter_label)
+
+	_entity_filter = OptionButton.new()
+	_entity_filter.add_item("All", 0)
+	_entity_filter.add_item("Networked", 1)
+	_entity_filter.add_item("Local-only", 2)
+	_entity_filter.item_selected.connect(_on_entity_filter_changed)
+	filter_row.add_child(_entity_filter)
 
 	_entity_tree = Tree.new()
 	_entity_tree.size_flags_vertical = SIZE_EXPAND_FILL
@@ -185,6 +235,20 @@ func _build_config_tab() -> void:
 	var content := VBoxContainer.new()
 	content.size_flags_horizontal = SIZE_EXPAND_FILL
 	scroll.add_child(content)
+
+	# Scan directories
+	var scan_label := Label.new()
+	scan_label.text = "Scan Directories (one per line):"
+	content.add_child(scan_label)
+
+	_scan_dirs_edit = TextEdit.new()
+	_scan_dirs_edit.custom_minimum_size = Vector2(0, 50)
+	_scan_dirs_edit.placeholder_text = "res://game/\nres://shared/"
+	_scan_dirs_edit.text = "res://"
+	_scan_dirs_edit.tooltip_text = "Directories to scan for components and entities. Addons and .godot are always excluded."
+	content.add_child(_scan_dirs_edit)
+
+	content.add_child(_make_separator())
 
 	# Skip list
 	var skip_label := Label.new()
@@ -261,16 +325,59 @@ func _make_separator() -> HSeparator:
 func _on_scan_pressed() -> void:
 	_scan_button.disabled = true
 	_scan_button.text = "Scanning..."
+	_summary_label.text = "Scanning..."
+
+	# Apply scan directory config from UI
+	_apply_scan_dirs_config()
 
 	# Allow UI to update before blocking scan
 	await get_tree().process_frame
 
 	_scanner.scan()
+
+	_dirty_components.clear()
+	_dirty_entities.clear()
+
 	_populate_component_tree()
 	_populate_entity_tree()
+	_update_summary()
 
 	_scan_button.disabled = false
 	_scan_button.text = "Scan"
+
+
+func _apply_scan_dirs_config() -> void:
+	var text := _scan_dirs_edit.text.strip_edges()
+	if text == "":
+		return
+	var dirs: Array[String] = []
+	for line in text.split("\n"):
+		var stripped := line.strip_edges()
+		if stripped != "":
+			dirs.append(stripped)
+	if not dirs.is_empty():
+		_scanner.scan_directories = dirs
+
+
+func _update_summary() -> void:
+	var total_comps := _scanner.components.size()
+	var synced_comps := 0
+	for c in _scanner.components:
+		if c.is_sync_component:
+			synced_comps += 1
+
+	var total_ents := _scanner.entities.size()
+	var networked_ents := 0
+	var continuous_ents := 0
+	for e in _scanner.entities:
+		if e.has_network_identity:
+			networked_ents += 1
+		if e.has_sync_entity:
+			continuous_ents += 1
+
+	_summary_label.text = "%d components (%d synced)  |  %d entities (%d networked, %d continuous)" % [
+		total_comps, synced_comps, total_ents, networked_ents, continuous_ents
+	]
 
 
 # ============================================================================
@@ -296,10 +403,12 @@ func _populate_component_tree() -> void:
 			continue
 
 		var item := _component_tree.create_item(root)
+		var is_dirty := _dirty_components.has(comp.script_path)
 
-		# Column 0: Name + type
+		# Column 0: Name + type + dirty indicator
 		var type_suffix := " (SyncComponent)" if comp.is_sync_component else " (Component)"
-		item.set_text(0, comp.class_name_str + type_suffix)
+		var dirty_mark := " *" if is_dirty else ""
+		item.set_text(0, comp.class_name_str + type_suffix + dirty_mark)
 		item.set_tooltip_text(0, comp.script_path)
 
 		if comp.is_sync_component:
@@ -308,19 +417,38 @@ func _populate_component_tree() -> void:
 			item.set_text(1, CodebaseScanner.priority_to_string(highest_priority))
 
 			# Column 2: Sync indicator
-			item.set_text(2, "Sync" if comp.is_sync_component else "")
+			item.set_text(2, "Sync")
 
 			# Column 3: Rate
 			item.set_text(3, CodebaseScanner.priority_to_rate(highest_priority))
 
-			# Add expandable child rows for each property
+			# Color coding
+			var row_color := _color_modified if is_dirty else _color_synced
+			item.set_custom_color(0, row_color)
+			item.set_custom_color(2, _color_synced)
+
+			# Add expandable child rows for each property (editable priority)
 			for prop_name in comp.properties:
 				var prop_data: Dictionary = comp.properties[prop_name]
 				var child := _component_tree.create_item(item)
 				child.set_text(0, "  %s (%s)" % [prop_name, prop_data.get("type", "?")])
-				child.set_text(1, CodebaseScanner.priority_to_string(prop_data.priority))
-				child.set_text(2, "No" if prop_data.priority == -1 else "Yes")
+
+				# Column 1: Editable priority dropdown
+				child.set_cell_mode(1, TreeItem.CELL_MODE_RANGE)
+				child.set_text(1, PRIORITY_OPTIONS_STR)
+				child.set_range(1, PRIORITY_VALUE_TO_DROPDOWN.get(prop_data.priority, 1))
+				child.set_editable(1, true)
+
+				# Column 2: Sync status
+				var is_synced := prop_data.priority != -1
+				child.set_text(2, "Yes" if is_synced else "No")
+				child.set_custom_color(2, _color_synced if is_synced else _color_local)
+
+				# Column 3: Rate
 				child.set_text(3, CodebaseScanner.priority_to_rate(prop_data.priority))
+
+				# Store metadata: {comp: ComponentInfo, prop_name: String}
+				child.set_metadata(0, {"comp": comp, "prop_name": prop_name})
 
 			# Add action buttons
 			_add_tree_button(item, 0, "Script", 0, "Open Script")
@@ -330,6 +458,8 @@ func _populate_component_tree() -> void:
 			item.set_text(1, "--")
 			item.set_text(2, "")
 			item.set_text(3, "--")
+			# Color coding: gray for non-synced
+			item.set_custom_color(0, _color_local)
 			_add_tree_button(item, 0, "Script", 0, "Open Script")
 			item.set_metadata(0, comp)
 
@@ -356,9 +486,58 @@ func _on_component_filter_changed(_index: int) -> void:
 	_populate_component_tree()
 
 
+## Handle inline priority editing on component property rows.
+func _on_component_tree_item_edited() -> void:
+	var item := _component_tree.get_edited()
+	if item == null:
+		return
+
+	var meta = item.get_metadata(0)
+	if meta == null or not meta is Dictionary:
+		return  # Not a property row
+
+	var comp = meta.get("comp")
+	var prop_name: String = meta.get("prop_name", "")
+	if comp == null or prop_name == "":
+		return
+
+	# Read new dropdown index and map to priority value
+	var dropdown_index := int(item.get_range(1))
+	if dropdown_index < 0 or dropdown_index >= PRIORITY_DROPDOWN_TO_VALUE.size():
+		return
+	var new_priority: int = PRIORITY_DROPDOWN_TO_VALUE[dropdown_index]
+
+	# Update the in-memory ComponentInfo
+	if comp.properties.has(prop_name):
+		comp.properties[prop_name].priority = new_priority
+
+	# Mark as dirty
+	_dirty_components[comp.script_path] = true
+
+	# Update the child row's sync and rate columns
+	var is_synced := new_priority != -1
+	item.set_text(2, "Yes" if is_synced else "No")
+	item.set_custom_color(2, _color_synced if is_synced else _color_local)
+	item.set_text(3, CodebaseScanner.priority_to_rate(new_priority))
+
+	# Update parent row aggregate
+	var parent := item.get_parent()
+	if parent:
+		var highest := _get_highest_priority(comp)
+		parent.set_text(1, CodebaseScanner.priority_to_string(highest))
+		parent.set_text(3, CodebaseScanner.priority_to_rate(highest))
+		parent.set_custom_color(0, _color_modified)
+		# Update name to show dirty indicator
+		var type_suffix := " (SyncComponent)" if comp.is_sync_component else " (Component)"
+		parent.set_text(0, comp.class_name_str + type_suffix + " *")
+
+
 func _on_component_tree_button(item: TreeItem, _column: int, id: int, _mouse_button: int) -> void:
 	var comp = item.get_metadata(0)
 	if comp == null:
+		return
+	# Skip if this is a property child row (metadata is a Dictionary)
+	if comp is Dictionary:
 		return
 
 	if id == 0:
@@ -389,6 +568,9 @@ func _save_component_metadata(comp) -> void:
 	var err := ResourceSaver.save(metadata, tres_path)
 	if err == OK:
 		SyncMetadataRegistry.invalidate_component(comp.script_path)
+		_dirty_components.erase(comp.script_path)
+		# Refresh tree to clear dirty indicators
+		_populate_component_tree()
 		print("[SyncDashboard] Saved: %s" % tres_path)
 	else:
 		push_error("[SyncDashboard] Failed to save: %s (error %d)" % [tres_path, err])
@@ -402,20 +584,40 @@ func _populate_entity_tree() -> void:
 	_entity_tree.clear()
 	var root := _entity_tree.create_item()
 
+	var search_text := _entity_search.text.to_lower() if _entity_search else ""
+	var filter_mode := _entity_filter.selected if _entity_filter else 0
+
 	for ent in _scanner.entities:
+		# Search filter
+		if search_text != "" and ent.class_name_str.to_lower().find(search_text) == -1:
+			continue
+
+		# Type filter
+		var is_networked := ent.has_network_identity or ent.has_sync_entity
+		if filter_mode == 1 and not is_networked:
+			continue
+		if filter_mode == 2 and is_networked:
+			continue
+
 		var item := _entity_tree.create_item(root)
 
 		# Column 0: Name
 		item.set_text(0, ent.class_name_str)
 		item.set_tooltip_text(0, ent.script_path)
 
-		# Column 1: Sync pattern
+		# Column 1: Sync pattern + color
 		if ent.has_sync_entity:
 			item.set_text(1, "Continuous")
+			item.set_custom_color(0, _color_continuous)
+			item.set_custom_color(1, _color_continuous)
 		elif ent.has_network_identity:
 			item.set_text(1, "Spawn-only")
+			item.set_custom_color(0, _color_spawn_only)
+			item.set_custom_color(1, _color_spawn_only)
 		else:
 			item.set_text(1, "None")
+			item.set_custom_color(0, _color_none)
+			item.set_custom_color(1, _color_none)
 
 		# Column 2: Ownership
 		if ent.peer_id_value == 0:
@@ -439,15 +641,20 @@ func _populate_entity_tree() -> void:
 			sync_parts.append(cp)
 		item.set_text(3, "+".join(sync_parts) if sync_parts.size() > 0 else "--")
 
-		# Add expandable children: component list
+		# Add expandable children: component list with sync status
 		if ent.component_names.size() > 0:
 			for comp_name in ent.component_names:
 				var child := _entity_tree.create_item(item)
 				child.set_text(0, "  %s" % comp_name)
 
-				# Check if this component is synced
+				# Check if this component is synced and color accordingly
 				var is_synced := _is_component_synced(comp_name)
 				child.set_text(2, "Sync" if is_synced else "")
+				if is_synced:
+					child.set_custom_color(0, _color_synced)
+					child.set_custom_color(2, _color_synced)
+				else:
+					child.set_custom_color(0, _color_local)
 
 		# Action buttons
 		_add_tree_button(item, 0, "Script", 0, "Open Script")
@@ -462,6 +669,14 @@ func _is_component_synced(comp_name: String) -> bool:
 		if comp.class_name_str == comp_name:
 			return comp.is_sync_component
 	return false
+
+
+func _on_entity_search_changed(_text: String) -> void:
+	_populate_entity_tree()
+
+
+func _on_entity_filter_changed(_index: int) -> void:
+	_populate_entity_tree()
 
 
 func _on_entity_tree_button(item: TreeItem, _column: int, id: int, _mouse_button: int) -> void:
@@ -510,6 +725,7 @@ func _save_entity_metadata(ent) -> void:
 	var err := ResourceSaver.save(metadata, tres_path)
 	if err == OK:
 		SyncMetadataRegistry.invalidate_entity(ent.script_path)
+		_dirty_entities.erase(ent.script_path)
 		print("[SyncDashboard] Saved: %s" % tres_path)
 	else:
 		push_error("[SyncDashboard] Failed to save: %s (error %d)" % [tres_path, err])
