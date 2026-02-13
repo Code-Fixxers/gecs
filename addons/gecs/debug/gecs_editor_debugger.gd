@@ -6,6 +6,11 @@ var session: EditorDebuggerSession
 ## The tab that will be added to the debugger window
 var debugger_tab: GECSEditorDebuggerTab = preload("res://addons/gecs/debug/gecs_editor_debugger_tab.tscn").instantiate()
 
+## Query Playground panel (additional debugger tab)
+var query_playground: GECSQueryPlayground
+## Component Change Journal panel (additional debugger tab)
+var component_journal: GECSComponentJournal
+
 ## The debugger messages that will be sent to the editor debugger
 var Msg := GECSEditorDebuggerMessages.Msg
 ## Reference to editor interface for selecting nodes
@@ -57,6 +62,9 @@ func _capture(message: String, data: Array, session_id: int) -> bool:
 	elif message == Msg.ENTITY_ADDED:
 		# data: [Entity, NodePath]
 		debugger_tab.entity_added(data[0], data[1])
+		# Register entity name in journal for display
+		if component_journal:
+			component_journal.register_entity(data[0], data[1])
 		return true
 	elif message == Msg.ENTITY_REMOVED:
 		# data: [Entity, NodePath]
@@ -81,10 +89,27 @@ func _capture(message: String, data: Array, session_id: int) -> bool:
 	elif message == Msg.ENTITY_COMPONENT_ADDED:
 		# data: [ent.get_instance_id(), comp.get_instance_id(), ClassUtils.get_type_name(comp), comp.serialize()]
 		debugger_tab.entity_component_added(data[0], data[1], data[2], data[3])
+		# Feed to Query Playground (register entity-component mapping)
+		if query_playground:
+			query_playground.register_entity_component(data[0], data[1], data[2])
+		# Feed to Component Journal (record component added)
+		if component_journal:
+			var ent_path = debugger_tab.ecs_data.get("entities", {}).get(data[0], {}).get("path", "")
+			var ent_name: String = str(ent_path).get_file() if str(ent_path) != "" else "Entity_%d" % data[0]
+			var comp_name: String = data[2].get_file().get_basename() if "/" in data[2] else data[2]
+			component_journal.record_component_added(data[0], ent_name, data[1], comp_name)
 		return true
 	elif message == Msg.ENTITY_COMPONENT_REMOVED:
 		# data: [Entity, Variant]
 		debugger_tab.entity_component_removed(data[0], data[1])
+		# Feed to Query Playground (unregister entity-component mapping)
+		if query_playground:
+			query_playground.unregister_entity_component(data[0], data[1])
+		# Feed to Component Journal (record component removed)
+		if component_journal:
+			var ent_path = debugger_tab.ecs_data.get("entities", {}).get(data[0], {}).get("path", "")
+			var ent_name: String = str(ent_path).get_file() if str(ent_path) != "" else "Entity_%d" % data[0]
+			component_journal.record_component_removed(data[0], ent_name, data[1], "")
 		return true
 	elif message == Msg.ENTITY_RELATIONSHIP_ADDED:
 		# data: [ent_id, rel_id, rel_data]
@@ -97,6 +122,9 @@ func _capture(message: String, data: Array, session_id: int) -> bool:
 	elif message == Msg.COMPONENT_PROPERTY_CHANGED:
 		# data: [Entity, Component, property_name, old_value, new_value]
 		debugger_tab.entity_component_property_changed(data[0], data[1], data[2], data[3], data[4])
+		# Feed to Component Journal (record property change)
+		if component_journal:
+			component_journal.record_property_changed(data[0], data[1], data[2], data[3], data[4])
 		return true
 	return false
 
@@ -116,11 +144,24 @@ func _setup_session(session_id):
 		session.stopped.connect(_on_session_stopped)
 	session.add_session_tab(debugger_tab)
 
+	# Create and add Query Playground tab
+	query_playground = GECSQueryPlayground.new()
+	query_playground.name = "Query Playground"
+	session.add_session_tab(query_playground)
+
+	# Create and add Component Journal tab
+	component_journal = GECSComponentJournal.new()
+	component_journal.name = "Component Journal"
+	session.add_session_tab(component_journal)
+
 
 func _on_session_started():
 	print("GECS Debug Session started")
 	debugger_tab.clear_all_data()
 	debugger_tab.active = true
+	# Reset journal session for fresh recording
+	if component_journal:
+		component_journal.reset_session()
 
 
 func _on_session_stopped():

@@ -135,6 +135,9 @@ func _ready() -> void:
 	# Connect to entities tree for right-click context menu
 	if entities_tree and not entities_tree.item_mouse_selected.is_connected(_on_entities_tree_item_mouse_selected):
 		entities_tree.item_mouse_selected.connect(_on_entities_tree_item_mouse_selected)
+	# Connect to entities tree item_edited signal for live property editing
+	if entities_tree and not entities_tree.item_edited.is_connected(_on_entity_property_edited):
+		entities_tree.item_edited.connect(_on_entity_property_edited)
 	# Connect to system tree for right-click context menu
 	if system_tree and not system_tree.button_clicked.is_connected(_on_system_tree_button_clicked):
 		system_tree.button_clicked.connect(_on_system_tree_button_clicked)
@@ -1247,15 +1250,17 @@ func entity_component_property_changed(
 					var updated := false
 					while prop_row:
 						if prop_row.has_meta("property_name") and prop_row.get_meta("property_name") == property_name:
-							prop_row.set_text(0, property_name + ": " + str(new_value))
+							# Update value based on cell mode to preserve editable state
+							_update_editable_row_value(prop_row, property_name, new_value)
 							updated = true
 							break
 						prop_row = prop_row.get_next()
 					# If property row not found (added dynamically), append it
 					if not updated:
 						var new_row = entities_tree.create_item(comp_child)
-						new_row.set_text(0, property_name + ": " + str(new_value))
 						new_row.set_meta("property_name", property_name)
+						# Use editable row for new dynamic properties too
+						_make_editable_row(new_row, property_name, new_value, comp_child)
 					# Done updating this component; no need to scan further
 					break
 				comp_child = comp_child.get_next()
@@ -1266,12 +1271,17 @@ func _add_serialized_rows(parent_item: TreeItem, data: Dictionary):
 	for key in data.keys():
 		var value = data[key]
 		var row = entities_tree.create_item(parent_item)
-		row.set_text(0, str(key) + ": " + _value_to_string(value))
 		row.set_meta("property_name", key)
+
+		# Make leaf values editable based on type; complex types remain read-only
 		if value is Dictionary:
+			row.set_text(0, str(key) + ": " + _value_to_string(value))
 			_add_serialized_rows(row, value)
 		elif value is Array:
+			row.set_text(0, str(key) + ": " + _value_to_string(value))
 			_add_array_rows(row, value)
+		else:
+			_make_editable_row(row, key, value, parent_item)
 
 
 func _add_array_rows(parent_item: TreeItem, arr: Array):
@@ -1300,6 +1310,127 @@ func _value_to_string(v):
 			return str(v)
 		_:
 			return str(v)
+
+
+## Make a property row editable based on value type.
+## For bool: checkbox in column 0, property name as text.
+## For int/float: range editor in column 0, property name as text.
+## For string: editable text in column 0 with "key: value" format.
+## Other simple types remain read-only text.
+func _make_editable_row(row: TreeItem, key: String, value: Variant, parent_item: TreeItem) -> void:
+	match typeof(value):
+		TYPE_BOOL:
+			row.set_cell_mode(0, TreeItem.CELL_MODE_CHECK)
+			row.set_text(0, str(key))
+			row.set_checked(0, value)
+			row.set_editable(0, true)
+		TYPE_INT:
+			row.set_cell_mode(0, TreeItem.CELL_MODE_RANGE)
+			row.set_text(0, str(key))
+			row.set_range_config(0, -999999, 999999, 1)
+			row.set_range(0, value)
+			row.set_editable(0, true)
+			row.set_meta("value_type", TYPE_INT)
+		TYPE_FLOAT:
+			row.set_cell_mode(0, TreeItem.CELL_MODE_RANGE)
+			row.set_text(0, str(key))
+			row.set_range_config(0, -999999, 999999, 0.01)
+			row.set_range(0, value)
+			row.set_editable(0, true)
+			row.set_meta("value_type", TYPE_FLOAT)
+		TYPE_STRING:
+			row.set_text(0, str(key) + ": " + str(value))
+			row.set_editable(0, true)
+			row.set_meta("editable_string", true)
+		_:
+			# Other simple types (Vector2, Color, etc.) remain read-only
+			row.set_text(0, str(key) + ": " + _value_to_string(value))
+
+	# Store entity/component context for write-back on editable rows
+	var entity_item = _find_entity_parent(parent_item)
+	if entity_item:
+		row.set_meta("entity_id", entity_item.get_meta("entity_id", -1))
+	var comp_item = _find_component_parent(parent_item)
+	if comp_item:
+		row.set_meta("component_id", comp_item.get_meta("component_id", -1))
+
+
+## Update an existing editable row's displayed value without losing its editable state.
+func _update_editable_row_value(row: TreeItem, key: String, value: Variant) -> void:
+	var cell_mode = row.get_cell_mode(0)
+	match cell_mode:
+		TreeItem.CELL_MODE_CHECK:
+			row.set_checked(0, bool(value))
+		TreeItem.CELL_MODE_RANGE:
+			row.set_range(0, float(value))
+		_:
+			# For string and read-only text modes, update the text
+			if row.has_meta("editable_string"):
+				row.set_text(0, str(key) + ": " + str(value))
+			else:
+				row.set_text(0, str(key) + ": " + _value_to_string(value))
+
+
+## Walk up the tree to find the nearest ancestor with entity_id metadata.
+func _find_entity_parent(item: TreeItem) -> TreeItem:
+	var current = item
+	while current:
+		if current.has_meta("entity_id"):
+			return current
+		current = current.get_parent()
+	return null
+
+
+## Walk up the tree to find the nearest ancestor with component_id metadata.
+func _find_component_parent(item: TreeItem) -> TreeItem:
+	var current = item
+	while current:
+		if current.has_meta("component_id"):
+			return current
+		current = current.get_parent()
+	return null
+
+
+## Handle property edits from the entities tree and send changes to the running game.
+func _on_entity_property_edited() -> void:
+	var item = entities_tree.get_edited()
+	if item == null:
+		return
+
+	var entity_id = item.get_meta("entity_id", -1)
+	var component_id = item.get_meta("component_id", -1)
+	var property_name = item.get_meta("property_name", "")
+
+	if entity_id == -1 or component_id == -1 or property_name == "":
+		return
+
+	# Determine the new value based on cell mode
+	var new_value
+	var cell_mode = item.get_cell_mode(0)
+	match cell_mode:
+		TreeItem.CELL_MODE_CHECK:
+			new_value = item.is_checked(0)
+		TreeItem.CELL_MODE_RANGE:
+			new_value = item.get_range(0)
+			# Preserve int type if the original value was int
+			if item.has_meta("value_type") and item.get_meta("value_type") == TYPE_INT:
+				new_value = int(new_value)
+		TreeItem.CELL_MODE_STRING:
+			var text = item.get_text(0)
+			# For editable strings, extract value after "key: " prefix
+			if item.has_meta("editable_string"):
+				var colon_pos = text.find(": ")
+				if colon_pos >= 0:
+					new_value = text.substr(colon_pos + 2)
+				else:
+					new_value = text
+			else:
+				new_value = text
+		_:
+			return
+
+	# Send edit message to the running game
+	send_to_game(GECSEditorDebuggerMessages.Msg.EDIT_COMPONENT_PROPERTY, [entity_id, component_id, property_name, new_value])
 
 
 func entity_relationship_added(ent: int, rel: int, rel_data: Dictionary):

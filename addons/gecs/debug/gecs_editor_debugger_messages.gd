@@ -21,6 +21,7 @@ const Msg = {
 	"COMPONENT_PROPERTY_CHANGED": "gecs:component_property_changed",
 	"POLL_ENTITY": "gecs:poll_entity",
 	"SELECT_ENTITY": "gecs:select_entity",
+	"EDIT_COMPONENT_PROPERTY": "gecs:edit_component_property",
 }
 
 

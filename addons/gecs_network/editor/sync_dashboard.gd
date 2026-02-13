@@ -6,8 +6,11 @@ extends Control
 ## all Entity subclasses with their sync patterns, and global config settings.
 ## Designers can edit priorities inline and save as .sync.tres metadata files.
 
+signal navigate_to_entity(entity_name: String)
+
 const CodebaseScanner = preload("res://addons/gecs_network/editor/codebase_scanner.gd")
 const CodeGenerator = preload("res://addons/gecs_network/editor/code_generator.gd")
+const ReplicationOverlay = preload("res://addons/gecs_network/editor/replication_overlay.gd")
 
 var _scanner: RefCounted  # CodebaseScanner instance
 var _editor_interface: EditorInterface
@@ -39,6 +42,14 @@ var _export_button: Button
 # Code preview popup
 var _code_popup: AcceptDialog
 var _code_text: TextEdit
+
+# Export/Import profile
+var _export_profile_button: Button
+var _import_profile_button: Button
+var _file_dialog: FileDialog
+
+# Replication overlay tab
+var _replication_overlay: Control  # GECSReplicationOverlay
 
 # Priority option labels (used for inline dropdowns)
 const PRIORITY_OPTIONS_STR := "REALTIME,HIGH,MEDIUM,LOW,LOCAL"
@@ -108,6 +119,7 @@ func _build_ui() -> void:
 	_build_components_tab()
 	_build_entities_tab()
 	_build_config_tab()
+	_build_replication_tab()
 
 	# Code preview popup
 	_code_popup = AcceptDialog.new()
@@ -150,6 +162,16 @@ func _build_components_tab() -> void:
 	_component_filter.add_item("Local", 2)
 	_component_filter.item_selected.connect(_on_component_filter_changed)
 	filter_row.add_child(_component_filter)
+
+	# Bulk operations row
+	var comp_bulk_row := HBoxContainer.new()
+	panel.add_child(comp_bulk_row)
+
+	var bulk_save_comps_btn := Button.new()
+	bulk_save_comps_btn.text = "Save All Modified"
+	bulk_save_comps_btn.tooltip_text = "Save .sync.tres for all components with unsaved changes"
+	bulk_save_comps_btn.pressed.connect(_on_bulk_save_components)
+	comp_bulk_row.add_child(bulk_save_comps_btn)
 
 	# Tree
 	_component_tree = Tree.new()
@@ -202,6 +224,26 @@ func _build_entities_tab() -> void:
 	_entity_filter.add_item("Local-only", 2)
 	_entity_filter.item_selected.connect(_on_entity_filter_changed)
 	filter_row.add_child(_entity_filter)
+
+	# Bulk operations row
+	var bulk_row := HBoxContainer.new()
+	panel.add_child(bulk_row)
+
+	var select_all_btn := Button.new()
+	select_all_btn.text = "Select All"
+	select_all_btn.pressed.connect(_on_select_all_entities)
+	bulk_row.add_child(select_all_btn)
+
+	var deselect_all_btn := Button.new()
+	deselect_all_btn.text = "Deselect All"
+	deselect_all_btn.pressed.connect(_on_deselect_all_entities)
+	bulk_row.add_child(deselect_all_btn)
+
+	var bulk_save_btn := Button.new()
+	bulk_save_btn.text = "Save All Modified"
+	bulk_save_btn.tooltip_text = "Save .sync.tres for all entities with unsaved changes"
+	bulk_save_btn.pressed.connect(_on_bulk_save_entities)
+	bulk_row.add_child(bulk_save_btn)
 
 	_entity_tree = Tree.new()
 	_entity_tree.size_flags_vertical = SIZE_EXPAND_FILL
@@ -310,6 +352,59 @@ func _build_config_tab() -> void:
 	_export_button.tooltip_text = "Generate component_priorities code for copy-paste"
 	_export_button.pressed.connect(_on_export_pressed)
 	content.add_child(_export_button)
+
+	# Import/Export sync profiles section
+	content.add_child(_make_separator())
+
+	var profile_label := Label.new()
+	profile_label.text = "Sync Profiles:"
+	content.add_child(profile_label)
+
+	var profile_row := HBoxContainer.new()
+	content.add_child(profile_row)
+
+	_export_profile_button = Button.new()
+	_export_profile_button.text = "Export Profile"
+	_export_profile_button.tooltip_text = "Export current sync config as JSON file"
+	_export_profile_button.pressed.connect(_on_export_profile)
+	profile_row.add_child(_export_profile_button)
+
+	_import_profile_button = Button.new()
+	_import_profile_button.text = "Import Profile"
+	_import_profile_button.tooltip_text = "Import sync config from JSON file"
+	_import_profile_button.pressed.connect(_on_import_profile)
+	profile_row.add_child(_import_profile_button)
+
+	# Preset profiles
+	var preset_row := HBoxContainer.new()
+	content.add_child(preset_row)
+
+	var preset_label := Label.new()
+	preset_label.text = "Presets:"
+	preset_row.add_child(preset_label)
+
+	var lan_button := Button.new()
+	lan_button.text = "LAN (High BW)"
+	lan_button.tooltip_text = "Set all synced components to HIGH priority (LAN/local play)"
+	lan_button.pressed.connect(_on_preset_lan)
+	preset_row.add_child(lan_button)
+
+	var wan_button := Button.new()
+	wan_button.text = "WAN (Conservative)"
+	wan_button.tooltip_text = "Set all synced components to MEDIUM/LOW priority (internet play)"
+	wan_button.pressed.connect(_on_preset_wan)
+	preset_row.add_child(wan_button)
+
+
+func _build_replication_tab() -> void:
+	_replication_overlay = ReplicationOverlay.new()
+	_replication_overlay.name = "Replication"
+	_tab_container.add_child(_replication_overlay)
+
+
+## Returns the replication overlay instance for external data feeding.
+func get_replication_overlay() -> Control:
+	return _replication_overlay
 
 
 func _make_separator() -> HSeparator:
@@ -601,7 +696,10 @@ func _populate_entity_tree() -> void:
 
 		var item := _entity_tree.create_item(root)
 
-		# Column 0: Name
+		# Column 0: Name (checkable for bulk operations)
+		item.set_cell_mode(0, TreeItem.CELL_MODE_CHECK)
+		item.set_editable(0, true)
+		item.set_checked(0, false)
 		item.set_text(0, ent.class_name_str)
 		item.set_tooltip_text(0, ent.script_path)
 
@@ -660,6 +758,7 @@ func _populate_entity_tree() -> void:
 		_add_tree_button(item, 0, "Script", 0, "Open Script")
 		_add_tree_button(item, 0, "CodeEdit", 1, "Preview Code")
 		_add_tree_button(item, 0, "Save", 2, "Save .sync.tres")
+		_add_tree_button(item, 0, "Search", 3, "Find in Debugger")
 		item.set_metadata(0, ent)
 		item.collapsed = true
 
@@ -690,6 +789,9 @@ func _on_entity_tree_button(item: TreeItem, _column: int, id: int, _mouse_button
 		_show_code_preview(ent)
 	elif id == 2:
 		_save_entity_metadata(ent)
+	elif id == 3:
+		# Navigate to debugger - emit signal with entity class name
+		navigate_to_entity.emit(ent.class_name_str)
 
 
 func _show_code_preview(ent) -> void:
@@ -759,6 +861,192 @@ func _on_export_pressed() -> void:
 
 	_code_text.text = code
 	_code_popup.popup_centered()
+
+
+# ============================================================================
+# BULK OPERATIONS
+# ============================================================================
+
+func _on_select_all_entities() -> void:
+	if not _entity_tree:
+		return
+	var root = _entity_tree.get_root()
+	if root == null:
+		return
+	var child = root.get_first_child()
+	while child:
+		child.set_checked(0, true)
+		child = child.get_next()
+
+
+func _on_deselect_all_entities() -> void:
+	if not _entity_tree:
+		return
+	var root = _entity_tree.get_root()
+	if root == null:
+		return
+	var child = root.get_first_child()
+	while child:
+		child.set_checked(0, false)
+		child = child.get_next()
+
+
+func _on_bulk_save_entities() -> void:
+	var saved_count := 0
+	for script_path in _dirty_entities.keys():
+		for ent in _scanner.entities:
+			if ent.script_path == script_path:
+				_save_entity_metadata(ent)
+				saved_count += 1
+				break
+	if saved_count > 0:
+		_populate_entity_tree()
+		_summary_label.text = "Saved %d entity metadata files." % saved_count
+
+
+func _on_bulk_save_components() -> void:
+	var saved_count := 0
+	for script_path in _dirty_components.keys():
+		for comp in _scanner.components:
+			if comp.script_path == script_path:
+				_save_component_metadata(comp)
+				saved_count += 1
+				break
+	if saved_count > 0:
+		_populate_component_tree()
+		_summary_label.text = "Saved %d component metadata files." % saved_count
+
+
+# ============================================================================
+# EXPORT/IMPORT PROFILES
+# ============================================================================
+
+func _on_export_profile() -> void:
+	_show_file_dialog(FileDialog.FILE_MODE_SAVE_FILE, _on_export_profile_path_selected, "*.json")
+	_file_dialog.current_file = "sync_profile.json"
+
+
+func _on_export_profile_path_selected(path: String) -> void:
+	var profile := _build_export_profile()
+	var json_str := JSON.stringify(profile, "  ")
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file:
+		file.store_string(json_str)
+		file.close()
+		_summary_label.text = "Profile exported to: %s" % path.get_file()
+	else:
+		push_error("[SyncDashboard] Failed to export profile to: %s" % path)
+
+
+func _build_export_profile() -> Dictionary:
+	var profile := {}
+	profile["version"] = 1
+	profile["exported_at"] = Time.get_datetime_string_from_system()
+	profile["components"] = {}
+	profile["entities"] = {}
+
+	for comp in _scanner.components:
+		if not comp.is_sync_component:
+			continue
+		var comp_data := {}
+		for prop_name in comp.properties:
+			comp_data[prop_name] = comp.properties[prop_name].priority
+		profile["components"][comp.class_name_str] = comp_data
+
+	for ent in _scanner.entities:
+		if not ent.has_network_identity and not ent.has_sync_entity:
+			continue
+		profile["entities"][ent.class_name_str] = {
+			"sync_position": ent.sync_position,
+			"sync_rotation": ent.sync_rotation,
+			"sync_velocity": ent.sync_velocity,
+			"custom_properties": ent.custom_properties,
+		}
+
+	return profile
+
+
+func _on_import_profile() -> void:
+	_show_file_dialog(FileDialog.FILE_MODE_OPEN_FILE, _on_import_profile_path_selected, "*.json")
+
+
+func _on_import_profile_path_selected(path: String) -> void:
+	var file := FileAccess.open(path, FileAccess.READ)
+	if not file:
+		push_error("[SyncDashboard] Failed to open profile: %s" % path)
+		return
+	var json_str := file.get_as_text()
+	file.close()
+
+	var json := JSON.new()
+	var err := json.parse(json_str)
+	if err != OK:
+		push_error("[SyncDashboard] Invalid JSON in profile: %s" % path)
+		return
+
+	var profile: Dictionary = json.data
+	if not profile.has("version") or not profile.has("components"):
+		push_error("[SyncDashboard] Invalid profile format")
+		return
+
+	# Apply component priorities
+	var applied := 0
+	var comp_profiles: Dictionary = profile.get("components", {})
+	for comp in _scanner.components:
+		if not comp.is_sync_component:
+			continue
+		if comp_profiles.has(comp.class_name_str):
+			var comp_data: Dictionary = comp_profiles[comp.class_name_str]
+			for prop_name in comp_data:
+				if comp.properties.has(prop_name):
+					comp.properties[prop_name].priority = int(comp_data[prop_name])
+					_dirty_components[comp.script_path] = true
+					applied += 1
+
+	_populate_component_tree()
+	_populate_entity_tree()
+	_summary_label.text = "Imported profile: %d priorities applied from %s" % [applied, path.get_file()]
+
+
+func _on_preset_lan() -> void:
+	for comp in _scanner.components:
+		if not comp.is_sync_component:
+			continue
+		for prop_name in comp.properties:
+			if comp.properties[prop_name].priority != -1:  # Don't change LOCAL
+				comp.properties[prop_name].priority = 1  # HIGH
+				_dirty_components[comp.script_path] = true
+	_populate_component_tree()
+	_summary_label.text = "LAN preset applied: all synced properties set to HIGH priority"
+
+
+func _on_preset_wan() -> void:
+	for comp in _scanner.components:
+		if not comp.is_sync_component:
+			continue
+		for prop_name in comp.properties:
+			var current = comp.properties[prop_name].priority
+			if current == -1:
+				continue  # Don't change LOCAL
+			if current <= 1:  # REALTIME or HIGH -> MEDIUM
+				comp.properties[prop_name].priority = 2
+			else:
+				comp.properties[prop_name].priority = 3  # LOW
+			_dirty_components[comp.script_path] = true
+	_populate_component_tree()
+	_summary_label.text = "WAN preset applied: priorities reduced for conservative bandwidth"
+
+
+func _show_file_dialog(mode: FileDialog.FileMode, callback: Callable, filter: String) -> void:
+	if _file_dialog:
+		_file_dialog.queue_free()
+	_file_dialog = FileDialog.new()
+	_file_dialog.file_mode = mode
+	_file_dialog.access = FileDialog.ACCESS_RESOURCES
+	_file_dialog.add_filter(filter)
+	_file_dialog.file_selected.connect(callback)
+	add_child(_file_dialog)
+	_file_dialog.popup_centered(Vector2i(600, 400))
 
 
 # ============================================================================

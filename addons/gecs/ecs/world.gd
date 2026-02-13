@@ -1272,6 +1272,27 @@ func _handle_debugger_message(message: String, data: Array) -> bool:
 		var entity_id = data[0]
 		_poll_entity_for_debugger(entity_id)
 		return true
+	elif message == "edit_component_property":
+		# Editor requested to edit a component property value at runtime
+		var entity_id = data[0] # int (instance_id)
+		var component_id = data[1] # int (instance_id)
+		var property_name = data[2] # String
+		var new_value = data[3] # Variant
+
+		# Find the entity by instance ID
+		for ent in entities:
+			if ent.get_instance_id() == entity_id:
+				# Find the component by instance ID
+				for comp_path in ent.components:
+					var comp = ent.components[comp_path]
+					if comp.get_instance_id() == component_id:
+						# Set the property value; the component's property_changed
+						# signal will fire automatically and the debugger will
+						# receive the update via the existing observer flow
+						comp.set(property_name, new_value)
+						return true
+				break
+		return false
 	elif message == "select_entity":
 		# Editor requested to select an entity in the scene tree
 		var entity_path = data[0]
