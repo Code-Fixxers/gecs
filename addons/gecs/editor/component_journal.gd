@@ -65,6 +65,7 @@ var _entries: Array = []  ## Array[JournalEntry]
 var _session_start_time: float = 0.0
 var _is_recording: bool = true
 var _auto_scroll: bool = true
+var _editor_data: GECSEditorData = null
 
 ## Entity / component name caches so that later events (e.g. property changes)
 ## can display human-readable names even if the caller only provides IDs.
@@ -96,16 +97,73 @@ func _ready() -> void:
 	_build_ui()
 
 
+func set_editor_data(data: GECSEditorData) -> void:
+	_editor_data = data
+	if not _editor_data:
+		return
+
+	# Connect signals
+	if not _editor_data.entity_added.is_connected(_on_entity_added):
+		_editor_data.entity_added.connect(_on_entity_added)
+	if not _editor_data.component_added.is_connected(_on_component_added):
+		_editor_data.component_added.connect(_on_component_added)
+	if not _editor_data.component_removed.is_connected(_on_component_removed):
+		_editor_data.component_removed.connect(_on_component_removed)
+	if not _editor_data.component_property_changed.is_connected(_on_component_property_changed):
+		_editor_data.component_property_changed.connect(_on_component_property_changed)
+
+
 # ---------------------------------------------------------------------------
-# Public API -- receiving events
+# Signal Handlers
+# ---------------------------------------------------------------------------
+
+func _on_entity_added(entity_id: int, path: NodePath) -> void:
+	_entity_names[entity_id] = str(path).get_file()
+
+func _on_component_added(entity_id: int, component_id: int, component_path: String, _data: Dictionary) -> void:
+	var comp_name = component_path.get_file().get_basename()
+	_component_names[component_id] = comp_name
+
+	# Try to get entity name from cache or data
+	var entity_name = _get_entity_name(entity_id)
+
+	record_component_added(entity_id, entity_name, component_id, comp_name)
+
+func _on_component_removed(entity_id: int, component_id: int) -> void:
+	var entity_name = _get_entity_name(entity_id)
+	var comp_name = _get_component_name(component_id)
+
+	record_component_removed(entity_id, entity_name, component_id, comp_name)
+
+func _on_component_property_changed(entity_id: int, component_id: int, property_name: String, old_value: Variant, new_value: Variant) -> void:
+	record_property_changed(entity_id, component_id, property_name, old_value, new_value)
+
+
+func _get_entity_name(entity_id: int) -> String:
+	if _entity_names.has(entity_id):
+		return _entity_names[entity_id]
+	if _editor_data and _editor_data.ecs_data.has("entities") and _editor_data.ecs_data["entities"].has(entity_id):
+		var path = _editor_data.ecs_data["entities"][entity_id].get("path", "")
+		if str(path) != "":
+			var name = str(path).get_file()
+			_entity_names[entity_id] = name
+			return name
+	return "Entity_%d" % entity_id
+
+func _get_component_name(component_id: int) -> String:
+	if _component_names.has(component_id):
+		return _component_names[component_id]
+	return "Component_%d" % component_id
+
+
+# ---------------------------------------------------------------------------
+# Internal Recording
 # ---------------------------------------------------------------------------
 
 ## Record a component being added to an entity.
 func record_component_added(entity_id: int, entity_name: String, component_id: int, component_name: String) -> void:
 	if not _is_recording:
 		return
-	_entity_names[entity_id] = entity_name
-	_component_names[component_id] = component_name
 	var entry := JournalEntry.new()
 	entry.timestamp = _get_elapsed_time()
 	entry.event_type = EventType.COMPONENT_ADDED
@@ -123,8 +181,8 @@ func record_component_removed(entity_id: int, entity_name: String, component_id:
 	entry.timestamp = _get_elapsed_time()
 	entry.event_type = EventType.COMPONENT_REMOVED
 	entry.entity_id = entity_id
-	entry.entity_name = _entity_names.get(entity_id, entity_name)
-	entry.component_name = _component_names.get(component_id, component_name)
+	entry.entity_name = entity_name
+	entry.component_name = component_name
 	_add_entry(entry)
 
 
@@ -136,22 +194,12 @@ func record_property_changed(entity_id: int, component_id: int, property_name: S
 	entry.timestamp = _get_elapsed_time()
 	entry.event_type = EventType.PROPERTY_CHANGED
 	entry.entity_id = entity_id
-	entry.entity_name = _entity_names.get(entity_id, "Entity_%d" % entity_id)
-	entry.component_name = _component_names.get(component_id, "Component_%d" % component_id)
+	entry.entity_name = _get_entity_name(entity_id)
+	entry.component_name = _get_component_name(component_id)
 	entry.property_name = property_name
 	entry.old_value = str(old_value)
 	entry.new_value = str(new_value)
 	_add_entry(entry)
-
-
-## Register an entity name for display (call early so later events can resolve it).
-func register_entity(entity_id: int, path: NodePath) -> void:
-	_entity_names[entity_id] = str(path).get_file()
-
-
-## Register a component name for display.
-func register_component(component_id: int, component_path: String) -> void:
-	_component_names[component_id] = component_path.get_file().get_basename()
 
 
 ## Reset the session (e.g. new game started). Clears all entries and caches.

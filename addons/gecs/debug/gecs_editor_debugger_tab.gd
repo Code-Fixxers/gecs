@@ -11,12 +11,10 @@ extends Control
 @onready var systems_expand_all_btn: Button = %SystemsExpandAllBtn
 @onready var pop_out_btn: Button = %PopOutBtn
 
-var ecs_data: Dictionary = {}
-var default_system := {"path": "", "active": true, "metrics": {}, "group": ""}
-var default_entity := {"path": "", "active": true, "components": {}, "relationships": {}}
+var editor_data: GECSEditorData = null
+
 var timer = 5
 var active := false
-var _pending_components: Dictionary = {} # ent_id -> Array[Dictionary] of pending component data
 var _popup_window: Window = null
 var _debugger_session: EditorDebuggerSession = null
 
@@ -46,6 +44,14 @@ const ICON_PIN = "📌" # Pinned item icon
 
 func _ready() -> void:
 	_update_debug_mode_overlay()
+	_setup_ui()
+
+
+func _process(delta: float) -> void:
+	pass
+
+
+func _setup_ui() -> void:
 	if system_tree:
 		# Five columns: name, group, execution time, status, and order
 		system_tree.columns = 5
@@ -108,7 +114,7 @@ func _ready() -> void:
 		# Create root item
 		if entities_tree.get_root() == null:
 			entities_tree.create_item()
-		# Polling & pinning removed; tree updates only via incoming messages
+
 	if entities_filter_line_edit and not entities_filter_line_edit.text_changed.is_connected(_on_entities_filter_changed):
 		entities_filter_line_edit.text_changed.connect(_on_entities_filter_changed)
 	if systems_filter_line_edit and not systems_filter_line_edit.text_changed.is_connected(_on_systems_filter_changed):
@@ -143,11 +149,6 @@ func _ready() -> void:
 		system_tree.button_clicked.connect(_on_system_tree_button_clicked)
 
 
-func _process(delta: float) -> void:
-	# No periodic polling; rely on debugger messages only
-	pass
-
-
 func _update_debug_mode_overlay() -> void:
 	if not debug_mode_overlay:
 		return
@@ -161,14 +162,57 @@ func _update_debug_mode_overlay() -> void:
 
 # --- External setters expected by debugger plugin ---
 func set_debugger_session(_session):
-	# Store session reference for sending messages to game
 	_debugger_session = _session
 
 
 func set_editor_interface(_editor_interface):
-	# Store editor interface reference for future use (e.g., selecting nodes)
-	# Currently not used, but expected by the debugger plugin
 	pass
+
+
+func set_editor_data(data: GECSEditorData) -> void:
+	editor_data = data
+	if not editor_data:
+		return
+
+	# Connect signals
+	if not editor_data.world_init.is_connected(_on_world_init):
+		editor_data.world_init.connect(_on_world_init)
+	if not editor_data.set_world.is_connected(_on_set_world):
+		editor_data.set_world.connect(_on_set_world)
+	if not editor_data.process_world.is_connected(_on_process_world):
+		editor_data.process_world.connect(_on_process_world)
+	if not editor_data.exit_world.is_connected(_on_exit_world):
+		editor_data.exit_world.connect(_on_exit_world)
+
+	if not editor_data.entity_added.is_connected(_on_entity_added):
+		editor_data.entity_added.connect(_on_entity_added)
+	if not editor_data.entity_removed.is_connected(_on_entity_removed):
+		editor_data.entity_removed.connect(_on_entity_removed)
+	if not editor_data.entity_disabled.is_connected(_on_entity_disabled):
+		editor_data.entity_disabled.connect(_on_entity_disabled)
+	if not editor_data.entity_enabled.is_connected(_on_entity_enabled):
+		editor_data.entity_enabled.connect(_on_entity_enabled)
+
+	if not editor_data.system_added.is_connected(_on_system_added):
+		editor_data.system_added.connect(_on_system_added)
+	if not editor_data.system_removed.is_connected(_on_system_removed):
+		editor_data.system_removed.connect(_on_system_removed)
+	if not editor_data.system_metric.is_connected(_on_system_metric):
+		editor_data.system_metric.connect(_on_system_metric)
+	if not editor_data.system_last_run_data.is_connected(_on_system_last_run_data):
+		editor_data.system_last_run_data.connect(_on_system_last_run_data)
+
+	if not editor_data.component_added.is_connected(_on_component_added):
+		editor_data.component_added.connect(_on_component_added)
+	if not editor_data.component_removed.is_connected(_on_component_removed):
+		editor_data.component_removed.connect(_on_component_removed)
+	if not editor_data.component_property_changed.is_connected(_on_component_property_changed):
+		editor_data.component_property_changed.connect(_on_component_property_changed)
+
+	if not editor_data.relationship_added.is_connected(_on_relationship_added):
+		editor_data.relationship_added.connect(_on_relationship_added)
+	if not editor_data.relationship_removed.is_connected(_on_relationship_removed):
+		editor_data.relationship_removed.connect(_on_relationship_removed)
 
 
 # Send a message from editor to the running game
@@ -181,19 +225,15 @@ func send_to_game(message: String, data: Array = []) -> bool:
 
 
 func clear_all_data():
-	ecs_data.clear()
-	_pending_components.clear()
-
+	# UI clear only. Data model is cleared by GECSEditorDebugger.
 	# Clear system tree
 	if system_tree:
 		system_tree.clear()
-		# Recreate root
 		system_tree.create_item()
 
 	# Clear entities tree
 	if entities_tree:
 		entities_tree.clear()
-		# Recreate root
 		entities_tree.create_item()
 
 	# Reset status bars
@@ -201,738 +241,67 @@ func clear_all_data():
 	_update_systems_status_bar()
 
 
-# ---- Filters & Refresh Helpers ----
-func _on_entities_filter_changed(new_text: String):
-	_refresh_entity_tree_filter()
+# ---- Signal Handlers ----
 
-
-func _on_systems_filter_changed(new_text: String):
-	_refresh_system_tree_filter()
-
-
-# ---- Button Handlers ----
-func _on_collapse_all_pressed():
-	collapse_all_entities()
-
-
-func _on_expand_all_pressed():
-	expand_all_entities()
-
-
-func _on_systems_collapse_all_pressed():
-	collapse_all_systems()
-
-
-func _on_systems_expand_all_pressed():
-	expand_all_systems()
-
-
-func _on_pop_out_pressed():
-	if _popup_window != null:
-		# Window already exists, close it and restore content
-		_on_popup_window_closed()
-		return
-
-	# Create a new window
-	_popup_window = Window.new()
-	_popup_window.title = "GECS Debug Viewer"
-	_popup_window.size = Vector2i(1200, 800)
-	_popup_window.initial_position = Window.WINDOW_INITIAL_POSITION_CENTER_SCREEN_WITH_MOUSE_FOCUS
-
-	# Move the main content to the window (not duplicate)
-	var hsplit = get_node("HSplit")
-	remove_child(hsplit)
-	_popup_window.add_child(hsplit)
-
-	# Add window to the scene tree
-	add_child(_popup_window)
-
-	# Connect close signal
-	_popup_window.close_requested.connect(_on_popup_window_closed)
-
-	# Show the window
-	_popup_window.show()
-
-	# Update the button text
-	pop_out_btn.text = "Pop In"
-
-
-func _on_popup_window_closed():
-	if _popup_window != null:
-		# Move content back to main tab
-		var hsplit = _popup_window.get_node("HSplit")
-		_popup_window.remove_child(hsplit)
-		add_child(hsplit)
-		move_child(hsplit, 0) # Move to beginning
-
-		# Close and cleanup window
-		_popup_window.queue_free()
-		_popup_window = null
-		pop_out_btn.text = "Pop Out"
-
-
-func _on_system_tree_item_mouse_selected(position: Vector2, mouse_button_index: int):
-	# When user clicks on a system tree item, check if clicking on status column to toggle or right-click for menu
-	var selected = system_tree.get_selected()
-	if not selected:
-		return
-
-	# Check if has system_id metadata with safe default
-	var system_id = selected.get_meta("system_id", null)
-	if system_id == null:
-		return
-
-	# Only process top-level system items (not child details)
-	if selected.get_parent() == system_tree.get_root():
-		if mouse_button_index == MOUSE_BUTTON_LEFT:
-			# Get the column that was clicked
-			var column = system_tree.get_column_at_position(position)
-			if column == 3: # Status column (now column 3)
-				_toggle_system_active()
-		elif mouse_button_index == MOUSE_BUTTON_RIGHT:
-			_show_system_context_menu(selected, position)
-
-
-func _on_system_tree_button_clicked(item: TreeItem, column: int, id: int, mouse_button_index: int):
-	# Handle button clicks in tree (currently unused, but keeping for future)
-	pass
-
-
-func _on_entities_tree_item_mouse_selected(position: Vector2, mouse_button_index: int):
-	# Handle right-click on entity tree items
-	if mouse_button_index != MOUSE_BUTTON_RIGHT:
-		return
-
-	var selected = entities_tree.get_selected()
-	if not selected:
-		return
-
-	# Check if has entity_id metadata (top-level entity item)
-	var entity_id = selected.get_meta("entity_id", null)
-	if entity_id == null:
-		return
-
-	# Only show context menu for top-level entity items
-	if selected.get_parent() == entities_tree.get_root():
-		_show_entity_context_menu(selected, position)
-
-
-func _show_entity_context_menu(item: TreeItem, position: Vector2):
-	var entity_id = item.get_meta("entity_id", null)
-	if entity_id == null:
-		return
-
-	var popup = PopupMenu.new()
-	add_child(popup)
-
-	var is_pinned = _pinned_entities.get(entity_id, false)
-	if is_pinned:
-		popup.add_item("Unpin Entity", 0)
-	else:
-		popup.add_item("Pin Entity", 0)
-
-	# Position the popup at the mouse position (use get_screen_position for proper screen coords)
-	var screen_pos = entities_tree.get_screen_position() + position
-	popup.position = screen_pos
-	popup.popup()
-
-	# Connect the selection signal
-	popup.id_pressed.connect(func(id):
-		if id == 0:
-			_toggle_entity_pin(entity_id, item)
-		popup.queue_free()
-	)
-
-	# Clean up when popup closes
-	popup.popup_hide.connect(func():
-		if is_instance_valid(popup):
-			popup.queue_free()
-	)
-
-
-func _show_system_context_menu(item: TreeItem, position: Vector2):
-	var system_id = item.get_meta("system_id", null)
-	if system_id == null:
-		return
-
-	var popup = PopupMenu.new()
-	add_child(popup)
-
-	var is_pinned = _pinned_systems.get(system_id, false)
-	if is_pinned:
-		popup.add_item("Unpin System", 0)
-	else:
-		popup.add_item("Pin System", 0)
-
-	# Position the popup at the mouse position (use get_screen_position for proper screen coords)
-	var screen_pos = system_tree.get_screen_position() + position
-	popup.position = screen_pos
-	popup.popup()
-
-	# Connect the selection signal
-	popup.id_pressed.connect(func(id):
-		if id == 0:
-			_toggle_system_pin(system_id, item)
-		popup.queue_free()
-	)
-
-	# Clean up when popup closes
-	popup.popup_hide.connect(func():
-		if is_instance_valid(popup):
-			popup.queue_free()
-	)
-
-
-func _toggle_entity_pin(entity_id: int, item: TreeItem):
-	var is_pinned = _pinned_entities.get(entity_id, false)
-	_pinned_entities[entity_id] = not is_pinned
-	_update_entity_pin_display(item, not is_pinned)
-	# Re-sort to move pinned items to top
-	if _entity_sort_column != -1 or not is_pinned:
-		_sort_entity_tree()
-
-
-func _toggle_system_pin(system_id: int, item: TreeItem):
-	var is_pinned = _pinned_systems.get(system_id, false)
-	_pinned_systems[system_id] = not is_pinned
-	_update_system_pin_display(item, not is_pinned)
-	# Re-sort to move pinned items to top
-	if _system_sort_column != -1 or not is_pinned:
-		_sort_system_tree()
-
-
-func _update_entity_pin_display(item: TreeItem, is_pinned: bool):
-	var current_text = item.get_text(0)
-	# Remove existing pin icon if present
-	if current_text.begins_with(ICON_PIN + " "):
-		current_text = current_text.substr(2)
-
-	if is_pinned:
-		item.set_text(0, ICON_PIN + " " + current_text)
-	else:
-		item.set_text(0, current_text)
-
-
-func _update_system_pin_display(item: TreeItem, is_pinned: bool):
-	var current_text = item.get_text(0) # Name is in column 0 now
-	# Remove existing pin icon if present
-	if current_text.begins_with(ICON_PIN + " "):
-		current_text = current_text.substr(2)
-
-	if is_pinned:
-		item.set_text(0, ICON_PIN + " " + current_text)
-	else:
-		item.set_text(0, current_text)
-
-
-func _toggle_system_active():
-	var selected = system_tree.get_selected()
-	if not selected:
-		push_warning("GECS Debug: No system selected")
-		return
-
-	var system_id = selected.get_meta("system_id", null)
-	if system_id == null:
-		push_warning("GECS Debug: No system selected")
-		return
-	var systems_data = ecs_data.get("systems", {})
-	var system_data = systems_data.get(system_id, {})
-	var current_active = system_data.get("active", true)
-
-	# Toggle the state
-	var new_active = not current_active
-
-	# Send message to game to toggle system active state
-	send_to_game("gecs:set_system_active", [system_id, new_active])
-
-	# Optimistically update local state (will be confirmed by game)
-	system_data["active"] = new_active
-	_update_system_active_display(selected, new_active)
-
-
-func _update_system_active_display(system_item: TreeItem, is_active: bool):
-	# Update the visual display of the system in column 3 as a button
-	if is_active:
-		system_item.set_text(3, "ACTIVE")
-		system_item.set_custom_color(3, Color(0.5, 1.0, 0.5)) # Green text
-	else:
-		system_item.set_text(3, "INACTIVE")
-		system_item.set_custom_color(3, Color(1.0, 0.3, 0.3)) # Red text
-
-	# Make the status column a clickable button
-	system_item.set_cell_mode(3, TreeItem.CELL_MODE_STRING)
-	system_item.set_selectable(3, true)
-	system_item.set_editable(3, false)
-
-
-func _on_system_tree_column_clicked(column: int, mouse_button_index: int):
-	# Only sort on left click
-	if mouse_button_index != MOUSE_BUTTON_LEFT:
-		return
-
-	# Cycle through: None -> Asc -> Desc -> None
-	if _system_sort_column == column:
-		if _system_sort_ascending:
-			# Currently ascending, switch to descending
-			_system_sort_ascending = false
-		else:
-			# Currently descending, remove sorting
-			_system_sort_column = -1
-			_system_sort_ascending = true
-	else:
-		# New column, start with ascending
-		_system_sort_column = column
-		_system_sort_ascending = true
-
-	# Update column title indicators
-	_update_system_column_indicators()
-
-	# Sort the tree
-	_sort_system_tree()
-
-
-func _update_system_column_indicators():
-	# Clear all column indicators first
-	for i in range(5):
-		var title = ""
-		match i:
-			0: title = "Name"
-			1: title = "Group"
-			2: title = "Time (ms)"
-			3: title = "Status"
-			4: title = "Order"
-
-		# Add arrow indicator if this is the sort column
-		if i == _system_sort_column:
-			if _system_sort_ascending:
-				title += " ▲"
-			else:
-				title += " ▼"
-
-		system_tree.set_column_title(i, title)
-
-
-func _sort_system_tree():
-	if not system_tree:
-		return
-
-	var root = system_tree.get_root()
-	if not root:
-		return
-
-	# Collect all system items with their data
-	var systems: Array = []
-	var pinned_systems: Array = []
-	var child = root.get_first_child()
-	while child:
-		var system_id = child.get_meta("system_id", null)
-		var system_data = {
-			"item": child,
-			"name": child.get_text(0),
-			"group": child.get_text(1),
-			"time": 0.0,
-			"status": child.get_text(3),
-			"order": int(child.get_text(4)) if child.get_text(4).is_valid_int() else 0,
-			"system_id": system_id,
-			"is_pinned": _pinned_systems.get(system_id, false)
-		}
-
-		# Get execution time from text (remove " ms" suffix if present)
-		var time_text = child.get_text(2)
-		if time_text:
-			system_data["time"] = float(time_text.replace(" ms", ""))
-
-		if system_data["is_pinned"]:
-			pinned_systems.append(system_data)
-		else:
-			systems.append(system_data)
-		child = child.get_next()
-
-	# Sort based on column (if sorting is active)
-	if _system_sort_column != -1:
-		match _system_sort_column:
-			0: # Name
-				if _system_sort_ascending:
-					systems.sort_custom(func(a, b): return a["name"].nocasecmp_to(b["name"]) < 0)
-				else:
-					systems.sort_custom(func(a, b): return a["name"].nocasecmp_to(b["name"]) > 0)
-			1: # Group
-				if _system_sort_ascending:
-					systems.sort_custom(func(a, b): return a["group"].nocasecmp_to(b["group"]) < 0)
-				else:
-					systems.sort_custom(func(a, b): return a["group"].nocasecmp_to(b["group"]) > 0)
-			2: # Time
-				if _system_sort_ascending:
-					systems.sort_custom(func(a, b): return a["time"] < b["time"])
-				else:
-					systems.sort_custom(func(a, b): return a["time"] > b["time"])
-			3: # Status
-				if _system_sort_ascending:
-					systems.sort_custom(func(a, b): return a["status"] < b["status"])
-				else:
-					systems.sort_custom(func(a, b): return a["status"] > b["status"])
-			4: # Order
-				if _system_sort_ascending:
-					systems.sort_custom(func(a, b): return a["order"] < b["order"])
-				else:
-					systems.sort_custom(func(a, b): return a["order"] > b["order"])
-
-	# Rebuild tree: pinned items first, then sorted items
-	for system_data in pinned_systems:
-		var item = system_data["item"]
-		root.remove_child(item)
-		root.add_child(item)
-	for system_data in systems:
-		var item = system_data["item"]
-		root.remove_child(item)
-		root.add_child(item)
-
-
-func _on_entities_tree_column_clicked(column: int, mouse_button_index: int):
-	# Only sort on left click
-	if mouse_button_index != MOUSE_BUTTON_LEFT:
-		return
-
-	# Cycle through: None -> Asc -> Desc -> None
-	if _entity_sort_column == column:
-		if _entity_sort_ascending:
-			# Currently ascending, switch to descending
-			_entity_sort_ascending = false
-		else:
-			# Currently descending, remove sorting
-			_entity_sort_column = -1
-			_entity_sort_ascending = true
-	else:
-		# New column, start with ascending
-		_entity_sort_column = column
-		_entity_sort_ascending = true
-
-	# Update column title indicators
-	_update_entity_column_indicators()
-
-	# Sort the tree
-	_sort_entity_tree()
-
-
-func _update_entity_column_indicators():
-	# Clear all column indicators first
-	for i in range(4):
-		var title = ""
-		match i:
-			0: title = "Entity"
-			1: title = "Comps"
-			2: title = "Rels"
-			3: title = "Nodes"
-
-		# Add arrow indicator if this is the sort column
-		if i == _entity_sort_column:
-			if _entity_sort_ascending:
-				title += " ▲"
-			else:
-				title += " ▼"
-
-		entities_tree.set_column_title(i, title)
-
-
-func _sort_entity_tree():
-	if not entities_tree:
-		return
-
-	var root = entities_tree.get_root()
-	if not root:
-		return
-
-	# Collect all entity items with their data
-	var entities: Array = []
-	var pinned_entities: Array = []
-	var child = root.get_first_child()
-	while child:
-		var entity_id = child.get_meta("entity_id", null)
-		var entity_data = {
-			"item": child,
-			"name": child.get_text(0),
-			"comps": 0,
-			"rels": 0,
-			"nodes": 0,
-			"entity_id": entity_id,
-			"is_pinned": _pinned_entities.get(entity_id, false)
-		}
-
-		# Get numeric counts from columns
-		var comps_text = child.get_text(1)
-		if comps_text:
-			entity_data["comps"] = int(comps_text)
-
-		var rels_text = child.get_text(2)
-		if rels_text:
-			entity_data["rels"] = int(rels_text)
-
-		var nodes_text = child.get_text(3)
-		if nodes_text:
-			entity_data["nodes"] = int(nodes_text)
-
-		if entity_data["is_pinned"]:
-			pinned_entities.append(entity_data)
-		else:
-			entities.append(entity_data)
-		child = child.get_next()
-
-	# Sort based on column (if sorting is active)
-	if _entity_sort_column != -1:
-		match _entity_sort_column:
-			0: # Name
-				if _entity_sort_ascending:
-					entities.sort_custom(func(a, b): return a["name"].nocasecmp_to(b["name"]) < 0)
-				else:
-					entities.sort_custom(func(a, b): return a["name"].nocasecmp_to(b["name"]) > 0)
-			1: # Components
-				if _entity_sort_ascending:
-					entities.sort_custom(func(a, b): return a["comps"] < b["comps"])
-				else:
-					entities.sort_custom(func(a, b): return a["comps"] > b["comps"])
-			2: # Relationships
-				if _entity_sort_ascending:
-					entities.sort_custom(func(a, b): return a["rels"] < b["rels"])
-				else:
-					entities.sort_custom(func(a, b): return a["rels"] > b["rels"])
-			3: # Nodes
-				if _entity_sort_ascending:
-					entities.sort_custom(func(a, b): return a["nodes"] < b["nodes"])
-				else:
-					entities.sort_custom(func(a, b): return a["nodes"] > b["nodes"])
-
-	# Rebuild tree: pinned items first, then sorted items
-	for entity_data in pinned_entities:
-		var item = entity_data["item"]
-		root.remove_child(item)
-		root.add_child(item)
-	for entity_data in entities:
-		var item = entity_data["item"]
-		root.remove_child(item)
-		root.add_child(item)
-
-
-# --- Utilities ---
-func get_or_create_dict(dict: Dictionary, key, default_val = {}) -> Dictionary:
-	if not dict.has(key):
-		dict[key] = default_val
-	return dict[key]
-
-
-func collapse_all_entities():
-	if not entities_tree:
-		return
-	var root = entities_tree.get_root()
-	if root == null:
-		return
-	var item = root.get_first_child()
-	while item:
-		_collapse_item_recursive(item)
-		item = item.get_next()
-
-
-func expand_all_entities():
-	if not entities_tree:
-		return
-	var root = entities_tree.get_root()
-	if root == null:
-		return
-	var item = root.get_first_child()
-	while item:
-		_expand_item_recursive(item)
-		item = item.get_next()
-
-
-func collapse_all_systems():
-	if not system_tree:
-		return
-	var root = system_tree.get_root()
-	if root == null:
-		return
-	var item = root.get_first_child()
-	while item:
-		_collapse_item_recursive(item)
-		item = item.get_next()
-
-
-func expand_all_systems():
-	if not system_tree:
-		return
-	var root = system_tree.get_root()
-	if root == null:
-		return
-	var item = root.get_first_child()
-	while item:
-		_expand_item_recursive(item)
-		item = item.get_next()
-
-
-func _collapse_item_recursive(item: TreeItem):
-	if item == null:
-		return
-	item.collapsed = true
-	var child = item.get_first_child()
-	while child:
-		_collapse_item_recursive(child)
-		child = child.get_next()
-
-
-func _expand_item_recursive(item: TreeItem):
-	if item == null:
-		return
-	item.collapsed = false
-	var child = item.get_first_child()
-	while child:
-		_expand_item_recursive(child)
-		child = child.get_next()
-
-
-# ---- Filters ----
-func _refresh_system_tree_filter():
-	if not system_tree:
-		return
-	var root = system_tree.get_root()
-	if root == null:
-		return
-	var filter = systems_filter_line_edit.text.to_lower() if systems_filter_line_edit else ""
-	var item = root.get_first_child()
-	while item:
-		var name = item.get_text(0).to_lower()
-		item.visible = filter == "" or name.find(filter) != -1
-		item = item.get_next()
-
-
-func _refresh_entity_tree_filter():
-	if not entities_tree:
-		return
-	var root = entities_tree.get_root()
-	if root == null:
-		return
-	var filter = entities_filter_line_edit.text.to_lower() if entities_filter_line_edit else ""
-	var item = root.get_first_child()
-	while item:
-		var label = item.get_text(0).to_lower()
-		var matches = filter == "" or label.find(filter) != -1
-		if not matches:
-			var comp_child = item.get_first_child()
-			while comp_child and not matches:
-				if comp_child.get_text(0).to_lower().find(filter) != -1:
-					matches = true
-					break
-				var prop_row = comp_child.get_first_child()
-				while prop_row and not matches:
-					if prop_row.get_text(0).to_lower().find(filter) != -1:
-						matches = true
-						break
-					prop_row = prop_row.get_next()
-				comp_child = comp_child.get_next()
-		item.visible = matches
-		item = item.get_next()
-
-
-func world_init(world_id: int, world_path: NodePath):
-	# Initialize world tracking
-	var world_dict := get_or_create_dict(ecs_data, "world")
-	world_dict["id"] = world_id
-	world_dict["path"] = world_path
-	# Update debug mode overlay in case settings changed
+func _on_world_init(world_id: int, world_path: NodePath):
 	_update_debug_mode_overlay()
 
 
-func set_world(world_id: int, world_path: NodePath):
-	# Set or update current world
-	var world_dict := get_or_create_dict(ecs_data, "world")
-	world_dict["id"] = world_id
-	world_dict["path"] = world_path
+func _on_set_world(world_id: int, world_path: NodePath):
+	pass
 
 
-func process_world(delta: float, group_name: String):
-	var world_dict := get_or_create_dict(ecs_data, "world")
-	world_dict["delta"] = delta
-	world_dict["active_group"] = group_name
+func _on_process_world(delta: float, group_name: String):
+	pass
 
 
-func exit_world():
-	ecs_data["exited"] = true
+func _on_exit_world():
+	pass
 
 
-func _update_entity_counts(entity_item: TreeItem, ent_id: int):
-	# Update the count columns for an entity
-	if not entity_item:
+func _on_entity_added(ent: int, path: NodePath) -> void:
+	if not entities_tree:
 		return
 
-	var entities = ecs_data.get("entities", {})
-	var entity_data = entities.get(ent_id, {})
+	var root = entities_tree.get_root()
+	if root == null:
+		root = entities_tree.create_item()
 
-	# Count components
-	var components = entity_data.get("components", {})
-	entity_item.set_text(1, str(components.size()))
+	var item = entities_tree.create_item(root)
+	# Column 0: Entity name with icon (and pin icon if pinned)
+	var display_name = ICON_ENTITY + " " + str(path).get_file()
+	if _pinned_entities.get(ent, false):
+		display_name = ICON_PIN + " " + display_name
+	item.set_text(0, display_name)
+	item.set_tooltip_text(0, str(ent) + " : " + str(path))
+	# Columns 1-3: Counts (will be updated)
+	item.set_text(1, "0")
+	item.set_text(2, "0")
+	item.set_text(3, "0")
+	item.set_meta("entity_id", ent)
+	item.set_meta("path", path)
+	item.collapsed = true # Start collapsed
 
-	# Count relationships
-	var relationships = entity_data.get("relationships", {})
-	entity_item.set_text(2, str(relationships.size()))
+	# Populate existing components and relationships from editor_data
+	if editor_data:
+		var entities = editor_data.ecs_data.get("entities", {})
+		var entity_data = entities.get(ent, {})
+		var components = entity_data.get("components", {})
+		for comp_id in components:
+			var comp_entry = components[comp_id]
+			# Handle wrapped format
+			if comp_entry.has("data") and comp_entry.has("path"):
+				_attach_component_to_entity_item(item, ent, comp_id, comp_entry["path"], comp_entry["data"])
+			else:
+				# Fallback if legacy or raw data? Should not happen with new GECSEditorData
+				_attach_component_to_entity_item(item, ent, comp_id, "Unknown", comp_entry)
 
-	# Count child nodes (entities tree doesn't track this from game data)
-	# We'll count the child TreeItems instead (components + relationships)
-	var child_count = 0
-	var child = entity_item.get_first_child()
-	while child:
-		# Count only component and relationship children, not property rows
-		if child.has_meta("component_id") or child.has_meta("relationship_id"):
-			child_count += 1
-		child = child.get_next()
-	entity_item.set_text(3, str(child_count))
+		var relationships = entity_data.get("relationships", {})
+		for rel_id in relationships:
+			var rel_data = relationships[rel_id]
+			_attach_relationship_to_entity_item(item, ent, rel_id, rel_data)
 
-
-func _is_flag_component(component_data: Dictionary) -> bool:
-	# A flag component has no serializable properties
-	# Check if data is empty or only has the placeholder
-	if component_data.is_empty():
-		return true
-	if component_data.size() == 1 and component_data.has("<no_serialized_properties>"):
-		return true
-	return false
-
-
-func entity_added(ent: int, path: NodePath) -> void:
-	var entities := get_or_create_dict(ecs_data, "entities")
-	# Merge with any existing (temporary) entry that may already have buffered components/relationships
-	var existing := entities.get(ent, {})
-	var existing_components: Dictionary = existing.get("components", {})
-	var existing_relationships: Dictionary = existing.get("relationships", {})
-	# Update in place instead of overwrite to avoid losing buffered component data
-	entities[ent] = {
-		"path": path,
-		"active": true,
-		"components": existing_components,
-		"relationships": existing_relationships
-	}
-	# Add to entities tree
-	if entities_tree:
-		var root = entities_tree.get_root()
-		if root == null:
-			root = entities_tree.create_item()
-		var item = entities_tree.create_item(root)
-		# Column 0: Entity name with icon (and pin icon if pinned)
-		var display_name = ICON_ENTITY + " " + str(path).get_file()
-		if _pinned_entities.get(ent, false):
-			display_name = ICON_PIN + " " + display_name
-		item.set_text(0, display_name)
-		item.set_tooltip_text(0, str(ent) + " : " + str(path))
-		# Columns 1-3: Counts (will be updated as components/relationships are added)
-		item.set_text(1, "0")
-		item.set_text(2, "0")
-		item.set_text(3, "0")
-		item.set_meta("entity_id", ent)
-		item.set_meta("path", path)
-		item.collapsed = true # Start collapsed
-		# Flush any pending components that arrived before the entity node was created
-		if _pending_components.has(ent):
-			for comp_info in _pending_components[ent]:
-				_attach_component_to_entity_item(item, ent, comp_info.comp_id, comp_info.comp_path, comp_info.data)
-			_pending_components.erase(ent)
-		# Update counts
-		_update_entity_counts(item, ent)
+	_update_entity_counts(item, ent)
 
 	# Re-sort if we have an active sort column
 	if _entity_sort_column != -1:
@@ -941,9 +310,7 @@ func entity_added(ent: int, path: NodePath) -> void:
 	_update_entity_status_bar()
 
 
-func entity_removed(ent: int, path: NodePath) -> void:
-	var entities := get_or_create_dict(ecs_data, "entities")
-	entities.erase(ent)
+func _on_entity_removed(ent: int, path: NodePath) -> void:
 	# Remove from tree
 	if entities_tree and entities_tree.get_root():
 		var root = entities_tree.get_root()
@@ -954,16 +321,11 @@ func entity_removed(ent: int, path: NodePath) -> void:
 				break
 			child = child.get_next()
 
-	# Clean up pinned state
 	_pinned_entities.erase(ent)
-
 	_update_entity_status_bar()
 
 
-func entity_disabled(ent: int, path: NodePath) -> void:
-	var entities = get_or_create_dict(ecs_data, "entities")
-	if entities.has(ent):
-		entities[ent]["active"] = false
+func _on_entity_disabled(ent: int, path: NodePath) -> void:
 	if entities_tree and entities_tree.get_root():
 		var child = entities_tree.get_root().get_first_child()
 		while child:
@@ -973,10 +335,7 @@ func entity_disabled(ent: int, path: NodePath) -> void:
 			child = child.get_next()
 
 
-func entity_enabled(ent: int, path: NodePath) -> void:
-	var entities = get_or_create_dict(ecs_data, "entities")
-	if entities.has(ent):
-		entities[ent]["active"] = true
+func _on_entity_enabled(ent: int, path: NodePath) -> void:
 	if entities_tree and entities_tree.get_root():
 		var child = entities_tree.get_root().get_first_child()
 		while child:
@@ -989,61 +348,44 @@ func entity_enabled(ent: int, path: NodePath) -> void:
 			child = child.get_next()
 
 
-func system_added(
-	sys: int, group: String, process_empty: bool, active: bool, paused: bool, path: NodePath
-) -> void:
-	var systems_data := get_or_create_dict(ecs_data, "systems")
-	systems_data[sys] = default_system.duplicate()
-	systems_data[sys]["path"] = path
-	systems_data[sys]["group"] = group
-	systems_data[sys]["process_empty"] = process_empty
-	systems_data[sys]["active"] = active
-	systems_data[sys]["paused"] = paused
-
+func _on_system_added(sys: int, group: String, process_empty: bool, active: bool, paused: bool, path: NodePath) -> void:
 	_update_systems_status_bar()
 
 
-func system_removed(sys: int, path: NodePath) -> void:
-	var systems_data := get_or_create_dict(ecs_data, "systems")
-	systems_data.erase(sys)
-
+func _on_system_removed(sys: int, path: NodePath) -> void:
 	# Clean up pinned state
 	_pinned_systems.erase(sys)
+	# Remove from tree?
+	# Wait, system_last_run_data updates the tree. If system is removed, we should probably remove it from tree.
+	if system_tree and system_tree.get_root():
+		var root = system_tree.get_root()
+		var child = root.get_first_child()
+		while child:
+			if child.get_meta("system_id", null) == sys:
+				root.remove_child(child)
+				break
+			child = child.get_next()
 
 	_update_systems_status_bar()
 
 
-func system_metric(system: int, system_name: String, time: float):
-	var systems_data := get_or_create_dict(ecs_data, "systems")
-	var sys_entry := get_or_create_dict(systems_data, system, default_system.duplicate())
-	# Track the last run time separately so it's always visible even when aggregation occurs
-	sys_entry["last_time"] = time
-	var sys_metrics = ecs_data["systems"][system]["metrics"]
-	if not sys_metrics:
-		# Initialize metrics if not present
-		sys_metrics = {"min_time": time, "max_time": time, "avg_time": time, "count": 1, "last_time": time}
-
-	sys_metrics["min_time"] = min(sys_metrics["min_time"], time)
-	sys_metrics["max_time"] = max(sys_metrics["max_time"], time)
-	sys_metrics["count"] += 1
-	sys_metrics["avg_time"] = (
-		((sys_metrics["avg_time"] * (sys_metrics["count"] - 1)) + time) / sys_metrics["count"]
-	)
-	sys_metrics["last_time"] = time
-	ecs_data["systems"][system]["metrics"] = sys_metrics
-
+func _on_system_metric(system: int, system_name: String, time: float):
 	_update_systems_status_bar()
 
 
-func system_last_run_data(system_id: int, system_name: String, last_run_data: Dictionary):
-	var systems_data := get_or_create_dict(ecs_data, "systems")
-	var sys_entry := get_or_create_dict(systems_data, system_id, default_system.duplicate())
-	sys_entry["last_run_data"] = last_run_data
+func _on_system_last_run_data(system_id: int, system_name: String, last_run_data: Dictionary):
+	if not editor_data:
+		return
+
+	var systems_data = editor_data.ecs_data.get("systems", {})
+	var sys_entry = systems_data.get(system_id, {})
+
 	# Update or create tree item
 	if system_tree:
 		var root = system_tree.get_root()
 		if root == null:
 			root = system_tree.create_item()
+
 		# Try to find existing item by metadata matching system_id
 		var existing: TreeItem = null
 		var child = root.get_first_child()
@@ -1083,12 +425,14 @@ func system_last_run_data(system_id: int, system_name: String, last_run_data: Di
 			existing.set_text(4, str(execution_order))
 		else:
 			existing.set_text(4, "-")
+
 		# Clear previous children to avoid stale data
 		var prev_child = existing.get_first_child()
 		while prev_child:
 			var next_child = prev_child.get_next()
 			existing.remove_child(prev_child)
 			prev_child = next_child
+
 		# Create nested rows for key info
 		var ent_count = last_run_data.get("entity_count", null)
 		var arch_count = last_run_data.get("archetype_count", null)
@@ -1122,88 +466,55 @@ func system_last_run_data(system_id: int, system_name: String, last_run_data: Di
 	_update_systems_status_bar()
 
 
-func entity_component_added(ent: int, comp: int, comp_path: String, data: Dictionary):
-	var entities := get_or_create_dict(ecs_data, "entities")
-	var entity := get_or_create_dict(entities, ent)
-	if not entity.has("components"):
-		entity["components"] = {}
-	# Fallback: if serialized data is empty, attempt reflection of exported properties
-	var final_data = data
-	if final_data.is_empty():
-		final_data = {}
-		# Try to get the actual Object from instance_id (editor debugger gives us ID only). We can't reliably from here; leave empty.
-		# As a workaround store a placeholder so UI shows component node.
-		final_data["<no_serialized_properties>"] = true
-	entity["components"][comp] = final_data
-	# Update tree with component node and property children
-	if entities_tree:
-		var root = entities_tree.get_root()
-		if root != null:
-			var entity_item: TreeItem = null
-			var child = root.get_first_child()
-			while child:
-				if child.get_meta("entity_id", null) == ent:
-					entity_item = child
-					break
-				child = child.get_next()
-			if entity_item:
-				# Try to find existing component item to update instead of duplicating
-				var existing_comp_item: TreeItem = null
-				var comp_child = entity_item.get_first_child()
-				while comp_child:
-					if comp_child.has_meta("component_id") and comp_child.get_meta("component_id") == comp:
-						existing_comp_item = comp_child
-						break
-					comp_child = comp_child.get_next()
-				if existing_comp_item:
-					# Clear previous property rows
-					var prev = existing_comp_item.get_first_child()
-					while prev:
-						var nxt = prev.get_next()
-						existing_comp_item.remove_child(prev)
-						prev = nxt
-					# Update title/path with icon
-					var icon = ICON_FLAG if _is_flag_component(final_data) else ICON_COMPONENT
-					existing_comp_item.set_text(0, icon + " " + comp_path.get_file().get_basename())
-					existing_comp_item.set_tooltip_text(0, comp_path)
-					existing_comp_item.set_meta("component_path", comp_path)
-					_add_serialized_rows(existing_comp_item, final_data)
-				else:
-					_attach_component_to_entity_item(entity_item, ent, comp, comp_path, final_data)
-				# Update entity counts
-				_update_entity_counts(entity_item, ent)
-			else:
-				# Buffer component until entity_added arrives
-				if not _pending_components.has(ent):
-					_pending_components[ent] = []
-				_pending_components[ent].append({"comp_id": comp, "comp_path": comp_path, "data": final_data})
+func _on_component_added(ent: int, comp: int, comp_path: String, data: Dictionary):
+	if not entities_tree:
+		return
 
-	# Re-sort if we have an active sort column
-	if _entity_sort_column != -1:
-		_sort_entity_tree()
+	var root = entities_tree.get_root()
+	if root != null:
+		var entity_item: TreeItem = null
+		var child = root.get_first_child()
+		while child:
+			if child.get_meta("entity_id", null) == ent:
+				entity_item = child
+				break
+			child = child.get_next()
+
+		if entity_item:
+			# Update or add
+			var existing_comp_item: TreeItem = null
+			var comp_child = entity_item.get_first_child()
+			while comp_child:
+				if comp_child.has_meta("component_id") and comp_child.get_meta("component_id") == comp:
+					existing_comp_item = comp_child
+					break
+				comp_child = comp_child.get_next()
+
+			if existing_comp_item:
+				# Clear previous property rows
+				var prev = existing_comp_item.get_first_child()
+				while prev:
+					var nxt = prev.get_next()
+					existing_comp_item.remove_child(prev)
+					prev = nxt
+				# Update title/path
+				var icon = ICON_FLAG if _is_flag_component(data) else ICON_COMPONENT
+				existing_comp_item.set_text(0, icon + " " + comp_path.get_file().get_basename())
+				existing_comp_item.set_tooltip_text(0, comp_path)
+				existing_comp_item.set_meta("component_path", comp_path)
+				_add_serialized_rows(existing_comp_item, data)
+			else:
+				_attach_component_to_entity_item(entity_item, ent, comp, comp_path, data)
+
+			_update_entity_counts(entity_item, ent)
+
+			if _entity_sort_column != -1:
+				_sort_entity_tree()
 
 	_update_entity_status_bar()
 
 
-func _attach_component_to_entity_item(entity_item: TreeItem, ent: int, comp: int, comp_path: String, final_data: Dictionary) -> void:
-	var comp_item = entities_tree.create_item(entity_item)
-	# Use flag icon for components with no properties, otherwise use component icon
-	var icon = ICON_FLAG if _is_flag_component(final_data) else ICON_COMPONENT
-	comp_item.set_text(0, icon + " " + comp_path.get_file().get_basename())
-	comp_item.set_tooltip_text(0, comp_path)
-	comp_item.set_meta("component_id", comp)
-	comp_item.set_meta("component_path", comp_path)
-	comp_item.collapsed = true # Start collapsed
-	# Add property rows with recursive serialization
-	_add_serialized_rows(comp_item, final_data)
-	# Update entity counts
-	_update_entity_counts(entity_item, ent)
-
-
-func entity_component_removed(ent: int, comp: int):
-	var entities = get_or_create_dict(ecs_data, "entities")
-	if entities.has(ent) and entities[ent].has("components"):
-		entities[ent]["components"].erase(comp)
+func _on_component_removed(ent: int, comp: int):
 	if entities_tree and entities_tree.get_root():
 		var entity_item: TreeItem = null
 		var child = entities_tree.get_root().get_first_child()
@@ -1219,21 +530,12 @@ func entity_component_removed(ent: int, comp: int):
 					entity_item.remove_child(comp_child)
 					break
 				comp_child = comp_child.get_next()
-			# Update entity counts
 			_update_entity_counts(entity_item, ent)
 
 	_update_entity_status_bar()
 
 
-func entity_component_property_changed(
-	ent: int, comp: int, property_name: String, old_value: Variant, new_value: Variant
-):
-	var entities = get_or_create_dict(ecs_data, "entities")
-	if entities.has(ent) and entities[ent].has("components"):
-		var component = entities[ent]["components"].get(comp)
-		if component:
-			component[property_name] = new_value
-	# Update tree property row
+func _on_component_property_changed(ent: int, comp: int, property_name: String, old_value: Variant, new_value: Variant):
 	if entities_tree and entities_tree.get_root():
 		var entity_item: TreeItem = null
 		var child = entities_tree.get_root().get_first_child()
@@ -1250,20 +552,642 @@ func entity_component_property_changed(
 					var updated := false
 					while prop_row:
 						if prop_row.has_meta("property_name") and prop_row.get_meta("property_name") == property_name:
-							# Update value based on cell mode to preserve editable state
+							# Update value
 							_update_editable_row_value(prop_row, property_name, new_value)
 							updated = true
 							break
 						prop_row = prop_row.get_next()
-					# If property row not found (added dynamically), append it
 					if not updated:
+						# If not found, add it
 						var new_row = entities_tree.create_item(comp_child)
 						new_row.set_meta("property_name", property_name)
-						# Use editable row for new dynamic properties too
 						_make_editable_row(new_row, property_name, new_value, comp_child)
-					# Done updating this component; no need to scan further
 					break
 				comp_child = comp_child.get_next()
+
+
+func _on_relationship_added(ent: int, rel: int, rel_data: Dictionary):
+	if entities_tree:
+		var root = entities_tree.get_root()
+		if root != null:
+			var entity_item: TreeItem = null
+			var child = root.get_first_child()
+			while child:
+				if child.get_meta("entity_id", null) == ent:
+					entity_item = child
+					break
+				child = child.get_next()
+
+			if entity_item:
+				# Find or create
+				var existing_rel_item: TreeItem = null
+				var rel_child = entity_item.get_first_child()
+				while rel_child:
+					if rel_child.has_meta("relationship_id") and rel_child.get_meta("relationship_id") == rel:
+						existing_rel_item = rel_child
+						break
+					rel_child = rel_child.get_next()
+
+				if existing_rel_item:
+					# Clear and rebuild
+					var prev = existing_rel_item.get_first_child()
+					while prev:
+						var nxt = prev.get_next()
+						existing_rel_item.remove_child(prev)
+						prev = nxt
+					_update_relationship_item(existing_rel_item, rel_data)
+				else:
+					_attach_relationship_to_entity_item(entity_item, ent, rel, rel_data)
+
+				_update_entity_counts(entity_item, ent)
+
+	if _entity_sort_column != -1:
+		_sort_entity_tree()
+
+	_update_entity_status_bar()
+
+
+func _on_relationship_removed(ent: int, rel: int):
+	if entities_tree and entities_tree.get_root():
+		var entity_item: TreeItem = null
+		var child = entities_tree.get_root().get_first_child()
+		while child:
+			if child.get_meta("entity_id", null) == ent:
+				entity_item = child
+				break
+			child = child.get_next()
+
+		if entity_item:
+			var rel_child = entity_item.get_first_child()
+			while rel_child:
+				if rel_child.has_meta("relationship_id") and rel_child.get_meta("relationship_id") == rel:
+					entity_item.remove_child(rel_child)
+					break
+				rel_child = rel_child.get_next()
+			_update_entity_counts(entity_item, ent)
+
+	_update_entity_status_bar()
+
+
+# ---- Helpers ----
+
+func _attach_component_to_entity_item(entity_item: TreeItem, ent: int, comp: int, comp_path: String, final_data: Dictionary) -> void:
+	var comp_item = entities_tree.create_item(entity_item)
+	var icon = ICON_FLAG if _is_flag_component(final_data) else ICON_COMPONENT
+	comp_item.set_text(0, icon + " " + comp_path.get_file().get_basename())
+	comp_item.set_tooltip_text(0, comp_path)
+	comp_item.set_meta("component_id", comp)
+	comp_item.set_meta("component_path", comp_path)
+	comp_item.collapsed = true
+	_add_serialized_rows(comp_item, final_data)
+
+
+func _attach_relationship_to_entity_item(entity_item: TreeItem, ent: int, rel: int, rel_data: Dictionary) -> void:
+	var rel_item = entities_tree.create_item(entity_item)
+	rel_item.set_meta("relationship_id", rel)
+	rel_item.collapsed = true
+	_update_relationship_item(rel_item, rel_data)
+
+
+func _update_relationship_item(rel_item: TreeItem, rel_data: Dictionary):
+	var relation_type = rel_data.get("relation_type", "Unknown")
+	var target_type = rel_data.get("target_type", "Unknown")
+
+	var title = ICON_RELATIONSHIP + " " + relation_type + " -> "
+	if target_type == "Entity":
+		var target_data = rel_data.get("target_data", {})
+		title += "Entity " + str(target_data.get("path", "Unknown"))
+	elif target_type == "Component":
+		var target_data = rel_data.get("target_data", {})
+		title += target_data.get("type", "Unknown")
+	elif target_type == "Archetype":
+		var target_data = rel_data.get("target_data", {})
+		var script_path = target_data.get("script_path", "")
+		title += "Archetype " + script_path.get_file().get_basename()
+	elif target_type == "null":
+		title += "Wildcard"
+	else:
+		title += target_type
+
+	rel_item.set_text(0, title)
+
+	var relation_data = rel_data.get("relation_data", {})
+	if not relation_data.is_empty():
+		var rel_data_item = entities_tree.create_item(rel_item)
+		rel_data_item.set_text(0, "Relation Properties:")
+		_add_serialized_rows(rel_data_item, relation_data)
+
+	if target_type == "Component":
+		var target_data = rel_data.get("target_data", {})
+		var target_comp_data = target_data.get("data", {})
+		if not target_comp_data.is_empty():
+			var target_data_item = entities_tree.create_item(rel_item)
+			target_data_item.set_text(0, "Target Properties:")
+			_add_serialized_rows(target_data_item, target_comp_data)
+
+
+func _is_flag_component(component_data: Dictionary) -> bool:
+	if component_data.is_empty():
+		return true
+	if component_data.size() == 1 and component_data.has("<no_serialized_properties>"):
+		return true
+	return false
+
+
+func _update_entity_counts(entity_item: TreeItem, ent_id: int):
+	# Update the count columns for an entity based on CHILDREN in the tree
+	# This matches visual state rather than data state (which might be async)
+	if not entity_item:
+		return
+
+	# Count child items
+	var comp_count = 0
+	var rel_count = 0
+
+	var child = entity_item.get_first_child()
+	while child:
+		if child.has_meta("component_id"):
+			comp_count += 1
+		elif child.has_meta("relationship_id"):
+			rel_count += 1
+		child = child.get_next()
+
+	entity_item.set_text(1, str(comp_count))
+	entity_item.set_text(2, str(rel_count))
+	# Nodes count is always 0 as GECS doesn't track nodes in this view currently
+	entity_item.set_text(3, str(comp_count + rel_count))
+
+
+func _update_entity_status_bar():
+	if not entity_status_bar or not editor_data:
+		return
+
+	var entities = editor_data.ecs_data.get("entities", {})
+	var entity_count = entities.size()
+
+	var total_components = 0
+	for entity_data in entities.values():
+		var components = entity_data.get("components", {})
+		total_components += components.size()
+
+	var total_relationships = 0
+	for entity_data in entities.values():
+		var relationships = entity_data.get("relationships", {})
+		total_relationships += relationships.size()
+
+	entity_status_bar.text = "Entities: %d | Components: %d | Relationships: %d" % [
+		entity_count,
+		total_components,
+		total_relationships
+	]
+
+
+func _update_systems_status_bar():
+	if not systems_status_bar or not editor_data:
+		return
+
+	var systems_data = editor_data.ecs_data.get("systems", {})
+	var system_count = systems_data.size()
+
+	var total_time_ms = 0.0
+	var most_expensive_name = ""
+	var most_expensive_time = 0.0
+
+	for system_id in systems_data.keys():
+		var system_data = systems_data[system_id]
+		var last_run_data = system_data.get("last_run_data", {})
+		var exec_time_ms = last_run_data.get("execution_time_ms", 0.0)
+
+		total_time_ms += exec_time_ms
+
+		if exec_time_ms > most_expensive_time:
+			most_expensive_time = exec_time_ms
+			var system_name = last_run_data.get("system_name", "")
+			if not system_name:
+				var path = system_data.get("path", "")
+				if path:
+					system_name = str(path).get_file().get_basename()
+				else:
+					system_name = "System_%d" % system_id
+			most_expensive_name = system_name
+
+	if most_expensive_name:
+		systems_status_bar.text = "Systems: %d | Total ms: %.1fms | Most Expensive: %s (%.1fms)" % [
+			system_count,
+			total_time_ms,
+			most_expensive_name,
+			most_expensive_time
+		]
+	else:
+		systems_status_bar.text = "Systems: %d | Total ms: %.1fms" % [
+			system_count,
+			total_time_ms
+		]
+
+
+# ---- UI Logic (Filters, Sorting, Pinning, Toggling) ----
+# Copied from original but cleaned up
+
+func _on_entities_filter_changed(new_text: String):
+	_refresh_entity_tree_filter()
+
+
+func _on_systems_filter_changed(new_text: String):
+	_refresh_system_tree_filter()
+
+
+func _on_collapse_all_pressed():
+	if not entities_tree: return
+	var item = entities_tree.get_root().get_first_child()
+	while item:
+		_collapse_item_recursive(item)
+		item = item.get_next()
+
+
+func _on_expand_all_pressed():
+	if not entities_tree: return
+	var item = entities_tree.get_root().get_first_child()
+	while item:
+		_expand_item_recursive(item)
+		item = item.get_next()
+
+
+func _on_systems_collapse_all_pressed():
+	if not system_tree: return
+	var item = system_tree.get_root().get_first_child()
+	while item:
+		_collapse_item_recursive(item)
+		item = item.get_next()
+
+
+func _on_systems_expand_all_pressed():
+	if not system_tree: return
+	var item = system_tree.get_root().get_first_child()
+	while item:
+		_expand_item_recursive(item)
+		item = item.get_next()
+
+
+func _collapse_item_recursive(item: TreeItem):
+	if item == null: return
+	item.collapsed = true
+	var child = item.get_first_child()
+	while child:
+		_collapse_item_recursive(child)
+		child = child.get_next()
+
+
+func _expand_item_recursive(item: TreeItem):
+	if item == null: return
+	item.collapsed = false
+	var child = item.get_first_child()
+	while child:
+		_expand_item_recursive(child)
+		child = child.get_next()
+
+
+func _refresh_system_tree_filter():
+	if not system_tree: return
+	var root = system_tree.get_root()
+	if root == null: return
+	var filter = systems_filter_line_edit.text.to_lower() if systems_filter_line_edit else ""
+	var item = root.get_first_child()
+	while item:
+		var name = item.get_text(0).to_lower()
+		item.visible = filter == "" or name.find(filter) != -1
+		item = item.get_next()
+
+
+func _refresh_entity_tree_filter():
+	if not entities_tree: return
+	var root = entities_tree.get_root()
+	if root == null: return
+	var filter = entities_filter_line_edit.text.to_lower() if entities_filter_line_edit else ""
+	var item = root.get_first_child()
+	while item:
+		var label = item.get_text(0).to_lower()
+		var matches = filter == "" or label.find(filter) != -1
+		if not matches:
+			var comp_child = item.get_first_child()
+			while comp_child and not matches:
+				if comp_child.get_text(0).to_lower().find(filter) != -1:
+					matches = true
+					break
+				var prop_row = comp_child.get_first_child()
+				while prop_row and not matches:
+					if prop_row.get_text(0).to_lower().find(filter) != -1:
+						matches = true
+						break
+					prop_row = prop_row.get_next()
+				comp_child = comp_child.get_next()
+		item.visible = matches
+		item = item.get_next()
+
+
+func _on_pop_out_pressed():
+	if _popup_window != null:
+		_on_popup_window_closed()
+		return
+	_popup_window = Window.new()
+	_popup_window.title = "GECS Debug Viewer"
+	_popup_window.size = Vector2i(1200, 800)
+	_popup_window.initial_position = Window.WINDOW_INITIAL_POSITION_CENTER_SCREEN_WITH_MOUSE_FOCUS
+	var hsplit = get_node("HSplit")
+	remove_child(hsplit)
+	_popup_window.add_child(hsplit)
+	add_child(_popup_window)
+	_popup_window.close_requested.connect(_on_popup_window_closed)
+	_popup_window.show()
+	pop_out_btn.text = "Pop In"
+
+
+func _on_popup_window_closed():
+	if _popup_window != null:
+		var hsplit = _popup_window.get_node("HSplit")
+		_popup_window.remove_child(hsplit)
+		add_child(hsplit)
+		move_child(hsplit, 0)
+		_popup_window.queue_free()
+		_popup_window = null
+		pop_out_btn.text = "Pop Out"
+
+
+func _on_system_tree_item_mouse_selected(position: Vector2, mouse_button_index: int):
+	var selected = system_tree.get_selected()
+	if not selected: return
+	var system_id = selected.get_meta("system_id", null)
+	if system_id == null: return
+	if selected.get_parent() == system_tree.get_root():
+		if mouse_button_index == MOUSE_BUTTON_LEFT:
+			var column = system_tree.get_column_at_position(position)
+			if column == 3: # Status column
+				_toggle_system_active()
+		elif mouse_button_index == MOUSE_BUTTON_RIGHT:
+			_show_system_context_menu(selected, position)
+
+
+func _on_system_tree_button_clicked(item: TreeItem, column: int, id: int, mouse_button_index: int):
+	pass
+
+
+func _on_entities_tree_item_mouse_selected(position: Vector2, mouse_button_index: int):
+	if mouse_button_index != MOUSE_BUTTON_RIGHT: return
+	var selected = entities_tree.get_selected()
+	if not selected: return
+	var entity_id = selected.get_meta("entity_id", null)
+	if entity_id == null: return
+	if selected.get_parent() == entities_tree.get_root():
+		_show_entity_context_menu(selected, position)
+
+
+func _show_entity_context_menu(item: TreeItem, position: Vector2):
+	var entity_id = item.get_meta("entity_id", null)
+	if entity_id == null: return
+	var popup = PopupMenu.new()
+	add_child(popup)
+	var is_pinned = _pinned_entities.get(entity_id, false)
+	popup.add_item("Unpin Entity" if is_pinned else "Pin Entity", 0)
+	var screen_pos = entities_tree.get_screen_position() + position
+	popup.position = screen_pos
+	popup.popup()
+	popup.id_pressed.connect(func(id):
+		if id == 0: _toggle_entity_pin(entity_id, item)
+		popup.queue_free()
+	)
+	popup.popup_hide.connect(func(): if is_instance_valid(popup): popup.queue_free())
+
+
+func _show_system_context_menu(item: TreeItem, position: Vector2):
+	var system_id = item.get_meta("system_id", null)
+	if system_id == null: return
+	var popup = PopupMenu.new()
+	add_child(popup)
+	var is_pinned = _pinned_systems.get(system_id, false)
+	popup.add_item("Unpin System" if is_pinned else "Pin System", 0)
+	var screen_pos = system_tree.get_screen_position() + position
+	popup.position = screen_pos
+	popup.popup()
+	popup.id_pressed.connect(func(id):
+		if id == 0: _toggle_system_pin(system_id, item)
+		popup.queue_free()
+	)
+	popup.popup_hide.connect(func(): if is_instance_valid(popup): popup.queue_free())
+
+
+func _toggle_entity_pin(entity_id: int, item: TreeItem):
+	var is_pinned = _pinned_entities.get(entity_id, false)
+	_pinned_entities[entity_id] = not is_pinned
+	_update_entity_pin_display(item, not is_pinned)
+	if _entity_sort_column != -1 or not is_pinned:
+		_sort_entity_tree()
+
+
+func _toggle_system_pin(system_id: int, item: TreeItem):
+	var is_pinned = _pinned_systems.get(system_id, false)
+	_pinned_systems[system_id] = not is_pinned
+	_update_system_pin_display(item, not is_pinned)
+	if _system_sort_column != -1 or not is_pinned:
+		_sort_system_tree()
+
+
+func _update_entity_pin_display(item: TreeItem, is_pinned: bool):
+	var current_text = item.get_text(0)
+	if current_text.begins_with(ICON_PIN + " "):
+		current_text = current_text.substr(2)
+	if is_pinned:
+		item.set_text(0, ICON_PIN + " " + current_text)
+	else:
+		item.set_text(0, current_text)
+
+
+func _update_system_pin_display(item: TreeItem, is_pinned: bool):
+	var current_text = item.get_text(0)
+	if current_text.begins_with(ICON_PIN + " "):
+		current_text = current_text.substr(2)
+	if is_pinned:
+		item.set_text(0, ICON_PIN + " " + current_text)
+	else:
+		item.set_text(0, current_text)
+
+
+func _toggle_system_active():
+	var selected = system_tree.get_selected()
+	if not selected: return
+	var system_id = selected.get_meta("system_id", null)
+	if system_id == null: return
+	if not editor_data: return
+
+	var systems_data = editor_data.ecs_data.get("systems", {})
+	var system_data = systems_data.get(system_id, {})
+	var current_active = system_data.get("active", true)
+	var new_active = not current_active
+
+	send_to_game("gecs:set_system_active", [system_id, new_active])
+
+	# Optimistically update
+	system_data["active"] = new_active
+	_update_system_active_display(selected, new_active)
+
+
+func _update_system_active_display(system_item: TreeItem, is_active: bool):
+	if is_active:
+		system_item.set_text(3, "ACTIVE")
+		system_item.set_custom_color(3, Color(0.5, 1.0, 0.5))
+	else:
+		system_item.set_text(3, "INACTIVE")
+		system_item.set_custom_color(3, Color(1.0, 0.3, 0.3))
+	system_item.set_cell_mode(3, TreeItem.CELL_MODE_STRING)
+	system_item.set_selectable(3, true)
+	system_item.set_editable(3, false)
+
+
+func _on_system_tree_column_clicked(column: int, mouse_button_index: int):
+	if mouse_button_index != MOUSE_BUTTON_LEFT: return
+	if _system_sort_column == column:
+		if _system_sort_ascending: _system_sort_ascending = false
+		else:
+			_system_sort_column = -1
+			_system_sort_ascending = true
+	else:
+		_system_sort_column = column
+		_system_sort_ascending = true
+	_update_system_column_indicators()
+	_sort_system_tree()
+
+
+func _update_system_column_indicators():
+	for i in range(5):
+		var title = ""
+		match i:
+			0: title = "Name"
+			1: title = "Group"
+			2: title = "Time (ms)"
+			3: title = "Status"
+			4: title = "Order"
+		if i == _system_sort_column:
+			title += " ▲" if _system_sort_ascending else " ▼"
+		system_tree.set_column_title(i, title)
+
+
+func _sort_system_tree():
+	if not system_tree: return
+	var root = system_tree.get_root()
+	if not root: return
+	var systems: Array = []
+	var pinned_systems: Array = []
+	var child = root.get_first_child()
+	while child:
+		var system_id = child.get_meta("system_id", null)
+		var system_data = {
+			"item": child,
+			"name": child.get_text(0),
+			"group": child.get_text(1),
+			"time": 0.0,
+			"status": child.get_text(3),
+			"order": int(child.get_text(4)) if child.get_text(4).is_valid_int() else 0,
+			"system_id": system_id,
+			"is_pinned": _pinned_systems.get(system_id, false)
+		}
+		var time_text = child.get_text(2)
+		if time_text: system_data["time"] = float(time_text.replace(" ms", ""))
+		if system_data["is_pinned"]: pinned_systems.append(system_data)
+		else: systems.append(system_data)
+		child = child.get_next()
+
+	if _system_sort_column != -1:
+		var sort_func = func(a, b): return 0
+		match _system_sort_column:
+			0: sort_func = func(a, b): return a["name"].nocasecmp_to(b["name"])
+			1: sort_func = func(a, b): return a["group"].nocasecmp_to(b["group"])
+			2: sort_func = func(a, b): return 1 if a["time"] > b["time"] else -1 if a["time"] < b["time"] else 0
+			3: sort_func = func(a, b): return a["status"].casecmp_to(b["status"])
+			4: sort_func = func(a, b): return 1 if a["order"] > b["order"] else -1 if a["order"] < b["order"] else 0
+
+		if _system_sort_ascending:
+			systems.sort_custom(func(a,b): return sort_func.call(a,b) < 0)
+		else:
+			systems.sort_custom(func(a,b): return sort_func.call(a,b) > 0)
+
+	for system_data in pinned_systems:
+		var item = system_data["item"]
+		root.remove_child(item)
+		root.add_child(item)
+	for system_data in systems:
+		var item = system_data["item"]
+		root.remove_child(item)
+		root.add_child(item)
+
+
+func _on_entities_tree_column_clicked(column: int, mouse_button_index: int):
+	if mouse_button_index != MOUSE_BUTTON_LEFT: return
+	if _entity_sort_column == column:
+		if _entity_sort_ascending: _entity_sort_ascending = false
+		else:
+			_entity_sort_column = -1
+			_entity_sort_ascending = true
+	else:
+		_entity_sort_column = column
+		_entity_sort_ascending = true
+	_update_entity_column_indicators()
+	_sort_entity_tree()
+
+
+func _update_entity_column_indicators():
+	for i in range(4):
+		var title = ""
+		match i:
+			0: title = "Entity"
+			1: title = "Comps"
+			2: title = "Rels"
+			3: title = "Nodes"
+		if i == _entity_sort_column:
+			title += " ▲" if _entity_sort_ascending else " ▼"
+		entities_tree.set_column_title(i, title)
+
+
+func _sort_entity_tree():
+	if not entities_tree: return
+	var root = entities_tree.get_root()
+	if not root: return
+	var entities: Array = []
+	var pinned_entities: Array = []
+	var child = root.get_first_child()
+	while child:
+		var entity_id = child.get_meta("entity_id", null)
+		var entity_data = {
+			"item": child,
+			"name": child.get_text(0),
+			"comps": int(child.get_text(1)),
+			"rels": int(child.get_text(2)),
+			"nodes": int(child.get_text(3)),
+			"entity_id": entity_id,
+			"is_pinned": _pinned_entities.get(entity_id, false)
+		}
+		if entity_data["is_pinned"]: pinned_entities.append(entity_data)
+		else: entities.append(entity_data)
+		child = child.get_next()
+
+	if _entity_sort_column != -1:
+		var sort_func = func(a, b): return 0
+		match _entity_sort_column:
+			0: sort_func = func(a, b): return a["name"].nocasecmp_to(b["name"])
+			1: sort_func = func(a, b): return 1 if a["comps"] > b["comps"] else -1 if a["comps"] < b["comps"] else 0
+			2: sort_func = func(a, b): return 1 if a["rels"] > b["rels"] else -1 if a["rels"] < b["rels"] else 0
+			3: sort_func = func(a, b): return 1 if a["nodes"] > b["nodes"] else -1 if a["nodes"] < b["nodes"] else 0
+
+		if _entity_sort_ascending:
+			entities.sort_custom(func(a,b): return sort_func.call(a,b) < 0)
+		else:
+			entities.sort_custom(func(a,b): return sort_func.call(a,b) > 0)
+
+	for entity_data in pinned_entities:
+		var item = entity_data["item"]
+		root.remove_child(item)
+		root.add_child(item)
+	for entity_data in entities:
+		var item = entity_data["item"]
+		root.remove_child(item)
+		root.add_child(item)
 
 
 # ---- Recursive Serialization Rendering ----
@@ -1312,11 +1236,6 @@ func _value_to_string(v):
 			return str(v)
 
 
-## Make a property row editable based on value type.
-## For bool: checkbox in column 0, property name as text.
-## For int/float: range editor in column 0, property name as text.
-## For string: editable text in column 0 with "key: value" format.
-## Other simple types remain read-only text.
 func _make_editable_row(row: TreeItem, key: String, value: Variant, parent_item: TreeItem) -> void:
 	match typeof(value):
 		TYPE_BOOL:
@@ -1343,10 +1262,8 @@ func _make_editable_row(row: TreeItem, key: String, value: Variant, parent_item:
 			row.set_editable(0, true)
 			row.set_meta("editable_string", true)
 		_:
-			# Other simple types (Vector2, Color, etc.) remain read-only
 			row.set_text(0, str(key) + ": " + _value_to_string(value))
 
-	# Store entity/component context for write-back on editable rows
 	var entity_item = _find_entity_parent(parent_item)
 	if entity_item:
 		row.set_meta("entity_id", entity_item.get_meta("entity_id", -1))
@@ -1355,7 +1272,6 @@ func _make_editable_row(row: TreeItem, key: String, value: Variant, parent_item:
 		row.set_meta("component_id", comp_item.get_meta("component_id", -1))
 
 
-## Update an existing editable row's displayed value without losing its editable state.
 func _update_editable_row_value(row: TreeItem, key: String, value: Variant) -> void:
 	var cell_mode = row.get_cell_mode(0)
 	match cell_mode:
@@ -1364,14 +1280,12 @@ func _update_editable_row_value(row: TreeItem, key: String, value: Variant) -> v
 		TreeItem.CELL_MODE_RANGE:
 			row.set_range(0, float(value))
 		_:
-			# For string and read-only text modes, update the text
 			if row.has_meta("editable_string"):
 				row.set_text(0, str(key) + ": " + str(value))
 			else:
 				row.set_text(0, str(key) + ": " + _value_to_string(value))
 
 
-## Walk up the tree to find the nearest ancestor with entity_id metadata.
 func _find_entity_parent(item: TreeItem) -> TreeItem:
 	var current = item
 	while current:
@@ -1381,7 +1295,6 @@ func _find_entity_parent(item: TreeItem) -> TreeItem:
 	return null
 
 
-## Walk up the tree to find the nearest ancestor with component_id metadata.
 func _find_component_parent(item: TreeItem) -> TreeItem:
 	var current = item
 	while current:
@@ -1391,11 +1304,9 @@ func _find_component_parent(item: TreeItem) -> TreeItem:
 	return null
 
 
-## Handle property edits from the entities tree and send changes to the running game.
 func _on_entity_property_edited() -> void:
 	var item = entities_tree.get_edited()
-	if item == null:
-		return
+	if item == null: return
 
 	var entity_id = item.get_meta("entity_id", -1)
 	var component_id = item.get_meta("component_id", -1)
@@ -1404,7 +1315,6 @@ func _on_entity_property_edited() -> void:
 	if entity_id == -1 or component_id == -1 or property_name == "":
 		return
 
-	# Determine the new value based on cell mode
 	var new_value
 	var cell_mode = item.get_cell_mode(0)
 	match cell_mode:
@@ -1412,12 +1322,10 @@ func _on_entity_property_edited() -> void:
 			new_value = item.is_checked(0)
 		TreeItem.CELL_MODE_RANGE:
 			new_value = item.get_range(0)
-			# Preserve int type if the original value was int
 			if item.has_meta("value_type") and item.get_meta("value_type") == TYPE_INT:
 				new_value = int(new_value)
 		TreeItem.CELL_MODE_STRING:
 			var text = item.get_text(0)
-			# For editable strings, extract value after "key: " prefix
 			if item.has_meta("editable_string"):
 				var colon_pos = text.find(": ")
 				if colon_pos >= 0:
@@ -1429,204 +1337,4 @@ func _on_entity_property_edited() -> void:
 		_:
 			return
 
-	# Send edit message to the running game
 	send_to_game(GECSEditorDebuggerMessages.Msg.EDIT_COMPONENT_PROPERTY, [entity_id, component_id, property_name, new_value])
-
-
-func entity_relationship_added(ent: int, rel: int, rel_data: Dictionary):
-	var entities := get_or_create_dict(ecs_data, "entities")
-	var entity := get_or_create_dict(entities, ent)
-	var relationships := get_or_create_dict(entity, "relationships")
-	relationships[rel] = rel_data
-
-	# Add to tree
-	if entities_tree:
-		var root = entities_tree.get_root()
-		if root != null:
-			var entity_item: TreeItem = null
-			var child = root.get_first_child()
-			while child:
-				if child.get_meta("entity_id", null) == ent:
-					entity_item = child
-					break
-				child = child.get_next()
-
-			if entity_item:
-				# Try to find existing relationship item to update
-				var existing_rel_item: TreeItem = null
-				var rel_child = entity_item.get_first_child()
-				while rel_child:
-					if rel_child.has_meta("relationship_id") and rel_child.get_meta("relationship_id") == rel:
-						existing_rel_item = rel_child
-						break
-					rel_child = rel_child.get_next()
-
-				if existing_rel_item:
-					# Clear and rebuild
-					var prev = existing_rel_item.get_first_child()
-					while prev:
-						var nxt = prev.get_next()
-						existing_rel_item.remove_child(prev)
-						prev = nxt
-					_update_relationship_item(existing_rel_item, rel_data)
-				else:
-					# Create new relationship item
-					var rel_item = entities_tree.create_item(entity_item)
-					rel_item.set_meta("relationship_id", rel)
-					rel_item.collapsed = true # Start collapsed
-					_update_relationship_item(rel_item, rel_data)
-				# Update entity counts
-				_update_entity_counts(entity_item, ent)
-
-	# Re-sort if we have an active sort column
-	if _entity_sort_column != -1:
-		_sort_entity_tree()
-
-	_update_entity_status_bar()
-
-
-func _update_relationship_item(rel_item: TreeItem, rel_data: Dictionary):
-	# Format the relationship display
-	var relation_type = rel_data.get("relation_type", "Unknown")
-	var target_type = rel_data.get("target_type", "Unknown")
-
-	# Build the title based on target type with relationship icon
-	var title = ICON_RELATIONSHIP + " " + relation_type + " -> "
-	if target_type == "Entity":
-		var target_data = rel_data.get("target_data", {})
-		title += "Entity " + str(target_data.get("path", "Unknown"))
-	elif target_type == "Component":
-		var target_data = rel_data.get("target_data", {})
-		title += target_data.get("type", "Unknown")
-	elif target_type == "Archetype":
-		var target_data = rel_data.get("target_data", {})
-		var script_path = target_data.get("script_path", "")
-		title += "Archetype " + script_path.get_file().get_basename()
-	elif target_type == "null":
-		title += "Wildcard"
-	else:
-		title += target_type
-
-	rel_item.set_text(0, title)
-
-	# Add relation data as children
-	var relation_data = rel_data.get("relation_data", {})
-	if not relation_data.is_empty():
-		var rel_data_item = entities_tree.create_item(rel_item)
-		rel_data_item.set_text(0, "Relation Properties:")
-		_add_serialized_rows(rel_data_item, relation_data)
-
-	# Add target data as children (for components with properties)
-	if target_type == "Component":
-		var target_data = rel_data.get("target_data", {})
-		var target_comp_data = target_data.get("data", {})
-		if not target_comp_data.is_empty():
-			var target_data_item = entities_tree.create_item(rel_item)
-			target_data_item.set_text(0, "Target Properties:")
-			_add_serialized_rows(target_data_item, target_comp_data)
-
-
-func entity_relationship_removed(ent: int, rel: int):
-	var entities = get_or_create_dict(ecs_data, "entities")
-	if entities.has(ent) and entities[ent].has("relationships"):
-		entities[ent]["relationships"].erase(rel)
-
-	# Remove from tree
-	if entities_tree and entities_tree.get_root():
-		var entity_item: TreeItem = null
-		var child = entities_tree.get_root().get_first_child()
-		while child:
-			if child.get_meta("entity_id", null) == ent:
-				entity_item = child
-				break
-			child = child.get_next()
-
-		if entity_item:
-			var rel_child = entity_item.get_first_child()
-			while rel_child:
-				if rel_child.has_meta("relationship_id") and rel_child.get_meta("relationship_id") == rel:
-					entity_item.remove_child(rel_child)
-					break
-				rel_child = rel_child.get_next()
-			# Update entity counts
-			_update_entity_counts(entity_item, ent)
-
-	_update_entity_status_bar()
-
-
-# ---- Status Bar Updates ----
-
-
-## Update the entity status bar with current counts
-func _update_entity_status_bar():
-	if not entity_status_bar:
-		return
-
-	var entities = ecs_data.get("entities", {})
-	var entity_count = entities.size()
-
-	# Count total components across all entities
-	var total_components = 0
-	for entity_data in entities.values():
-		var components = entity_data.get("components", {})
-		total_components += components.size()
-
-	# Count total relationships across all entities
-	var total_relationships = 0
-	for entity_data in entities.values():
-		var relationships = entity_data.get("relationships", {})
-		total_relationships += relationships.size()
-
-	entity_status_bar.text = "Entities: %d | Components: %d | Relationships: %d" % [
-		entity_count,
-		total_components,
-		total_relationships
-	]
-
-
-## Update the systems status bar with execution metrics
-func _update_systems_status_bar():
-	if not systems_status_bar:
-		return
-
-	var systems_data = ecs_data.get("systems", {})
-	var system_count = systems_data.size()
-
-	# Calculate total execution time and find most expensive system
-	var total_time_ms = 0.0
-	var most_expensive_name = ""
-	var most_expensive_time = 0.0
-
-	for system_id in systems_data.keys():
-		var system_data = systems_data[system_id]
-		# Get execution time from last_run_data if available (more accurate than last_time)
-		var last_run_data = system_data.get("last_run_data", {})
-		var exec_time_ms = last_run_data.get("execution_time_ms", 0.0)
-
-		total_time_ms += exec_time_ms
-
-		if exec_time_ms > most_expensive_time:
-			most_expensive_time = exec_time_ms
-			# Try to get a readable system name from last_run_data first, then path
-			var system_name = last_run_data.get("system_name", "")
-			if not system_name:
-				var path = system_data.get("path", "")
-				if path:
-					system_name = str(path).get_file().get_basename()
-				else:
-					system_name = "System_%d" % system_id
-			most_expensive_name = system_name
-
-	# Format the status bar text
-	if most_expensive_name:
-		systems_status_bar.text = "Systems: %d | Total ms: %.1fms | Most Expensive: %s (%.1fms)" % [
-			system_count,
-			total_time_ms,
-			most_expensive_name,
-			most_expensive_time
-		]
-	else:
-		systems_status_bar.text = "Systems: %d | Total ms: %.1fms" % [
-			system_count,
-			total_time_ms
-		]
