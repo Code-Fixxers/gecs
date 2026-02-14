@@ -1,3 +1,4 @@
+@tool
 class_name GECSEditorDebugger
 extends EditorDebuggerPlugin
 
@@ -10,6 +11,9 @@ var debugger_tab: GECSEditorDebuggerTab = preload("res://addons/gecs/debug/gecs_
 var query_playground: GECSQueryPlayground
 ## Component Change Journal panel (additional debugger tab)
 var component_journal: GECSComponentJournal
+
+## The centralized data model for the editor
+var editor_data: GECSEditorData = GECSEditorData.new()
 
 ## The debugger messages that will be sent to the editor debugger
 var Msg := GECSEditorDebuggerMessages.Msg
@@ -24,107 +28,57 @@ func _has_capture(capture):
 
 func _capture(message: String, data: Array, session_id: int) -> bool:
 	if message == Msg.WORLD_INIT:
-		# data: [World.get_path()]
-		var world = data[0]
-		var world_path = data[1]
-		debugger_tab.world_init(data[0], data[1])
+		editor_data.on_world_init(data[0], data[1])
 		return true
 	elif message == Msg.SYSTEM_METRIC:
-		# data: [system, system_name, elapsed_time]
-		var system = data[0]
-		var system_name = data[1]
-		var elapsed_time = data[2]
-		debugger_tab.system_metric(system, system_name, elapsed_time)
+		editor_data.on_system_metric(data[0], data[1], data[2])
 		return true
 	elif message == Msg.SYSTEM_LAST_RUN_DATA:
-		# data: [system_id, system_name, last_run_data]
-		var system_id = data[0]
-		var system_name = data[1]
-		var last_run_data = data[2]
-		debugger_tab.system_last_run_data(system_id, system_name, last_run_data)
+		editor_data.on_system_last_run_data(data[0], data[1], data[2])
 		return true
 	elif message == Msg.SET_WORLD:
 		if data.size() == 0:
 			return true
-		var world = data[0]
-		var world_path = data[1]
-		debugger_tab.set_world(world, world_path)
+		editor_data.on_set_world(data[0], data[1])
 		return true
 	elif message == Msg.PROCESS_WORLD:
-		# data: [float, String]
-		var delta = data[0]
-		var group_name = data[1]
-		debugger_tab.process_world(delta, group_name)
+		editor_data.on_process_world(data[0], data[1])
 		return true
 	elif message == Msg.EXIT_WORLD:
-		debugger_tab.exit_world()
+		editor_data.on_exit_world()
 		return true
 	elif message == Msg.ENTITY_ADDED:
-		# data: [Entity, NodePath]
-		debugger_tab.entity_added(data[0], data[1])
-		# Register entity name in journal for display
-		if component_journal:
-			component_journal.register_entity(data[0], data[1])
+		editor_data.on_entity_added(data[0], data[1])
 		return true
 	elif message == Msg.ENTITY_REMOVED:
-		# data: [Entity, NodePath]
-		debugger_tab.entity_removed(data[0], data[1])
+		editor_data.on_entity_removed(data[0], data[1])
 		return true
 	elif message == Msg.ENTITY_DISABLED:
-		# data: [Entity, NodePath]
-		debugger_tab.entity_disabled(data[0], data[1])
+		editor_data.on_entity_disabled(data[0], data[1])
 		return true
 	elif message == Msg.ENTITY_ENABLED:
-		# data: [Entity, NodePath]
-		debugger_tab.entity_enabled(data[0], data[1])
+		editor_data.on_entity_enabled(data[0], data[1])
 		return true
 	elif message == Msg.SYSTEM_ADDED:
-		# data: [System, group, process_empty, active, paused, NodePath]
-		debugger_tab.system_added(data[0], data[1], data[2], data[3], data[4], data[5])
+		editor_data.on_system_added(data[0], data[1], data[2], data[3], data[4], data[5])
 		return true
 	elif message == Msg.SYSTEM_REMOVED:
-		# data: [System, NodePath]
-		debugger_tab.system_removed(data[0], data[1])
+		editor_data.on_system_removed(data[0], data[1])
 		return true
 	elif message == Msg.ENTITY_COMPONENT_ADDED:
-		# data: [ent.get_instance_id(), comp.get_instance_id(), ClassUtils.get_type_name(comp), comp.serialize()]
-		debugger_tab.entity_component_added(data[0], data[1], data[2], data[3])
-		# Feed to Query Playground (register entity-component mapping)
-		if query_playground:
-			query_playground.register_entity_component(data[0], data[1], data[2])
-		# Feed to Component Journal (record component added)
-		if component_journal:
-			var ent_path = debugger_tab.ecs_data.get("entities", {}).get(data[0], {}).get("path", "")
-			var ent_name: String = str(ent_path).get_file() if str(ent_path) != "" else "Entity_%d" % data[0]
-			var comp_name: String = data[2].get_file().get_basename() if "/" in data[2] else data[2]
-			component_journal.record_component_added(data[0], ent_name, data[1], comp_name)
+		editor_data.on_component_added(data[0], data[1], data[2], data[3])
 		return true
 	elif message == Msg.ENTITY_COMPONENT_REMOVED:
-		# data: [Entity, Variant]
-		debugger_tab.entity_component_removed(data[0], data[1])
-		# Feed to Query Playground (unregister entity-component mapping)
-		if query_playground:
-			query_playground.unregister_entity_component(data[0], data[1])
-		# Feed to Component Journal (record component removed)
-		if component_journal:
-			var ent_path = debugger_tab.ecs_data.get("entities", {}).get(data[0], {}).get("path", "")
-			var ent_name: String = str(ent_path).get_file() if str(ent_path) != "" else "Entity_%d" % data[0]
-			component_journal.record_component_removed(data[0], ent_name, data[1], "")
+		editor_data.on_component_removed(data[0], data[1])
 		return true
 	elif message == Msg.ENTITY_RELATIONSHIP_ADDED:
-		# data: [ent_id, rel_id, rel_data]
-		debugger_tab.entity_relationship_added(data[0], data[1], data[2])
+		editor_data.on_relationship_added(data[0], data[1], data[2])
 		return true
 	elif message == Msg.ENTITY_RELATIONSHIP_REMOVED:
-		# data: [Entity, Relationship]
-		debugger_tab.entity_relationship_removed(data[0], data[1])
+		editor_data.on_relationship_removed(data[0], data[1])
 		return true
 	elif message == Msg.COMPONENT_PROPERTY_CHANGED:
-		# data: [Entity, Component, property_name, old_value, new_value]
-		debugger_tab.entity_component_property_changed(data[0], data[1], data[2], data[3], data[4])
-		# Feed to Component Journal (record property change)
-		if component_journal:
-			component_journal.record_property_changed(data[0], data[1], data[2], data[3], data[4])
+		editor_data.on_component_property_changed(data[0], data[1], data[2], data[3], data[4])
 		return true
 	return false
 
@@ -137,6 +91,10 @@ func _setup_session(session_id):
 	debugger_tab.set_debugger_session(session)
 	# Pass editor interface to the tab for selecting nodes
 	debugger_tab.set_editor_interface(editor_interface)
+	# Pass editor data model
+	if debugger_tab.has_method("set_editor_data"):
+		debugger_tab.set_editor_data(editor_data)
+
 	# Listens to the session started and stopped signals.
 	if not session.started.is_connected(_on_session_started):
 		session.started.connect(_on_session_started)
@@ -147,23 +105,35 @@ func _setup_session(session_id):
 	# Create and add Query Playground tab
 	query_playground = GECSQueryPlayground.new()
 	query_playground.name = "Query Playground"
+	if query_playground.has_method("set_editor_data"):
+		query_playground.set_editor_data(editor_data)
 	session.add_session_tab(query_playground)
 
 	# Create and add Component Journal tab
 	component_journal = GECSComponentJournal.new()
 	component_journal.name = "Component Journal"
+	if component_journal.has_method("set_editor_data"):
+		component_journal.set_editor_data(editor_data)
 	session.add_session_tab(component_journal)
 
 
 func _on_session_started():
 	print("GECS Debug Session started")
-	debugger_tab.clear_all_data()
-	debugger_tab.active = true
-	# Reset journal session for fresh recording
-	if component_journal:
+	editor_data.clear()
+	# The tabs will clear themselves via signals or we can notify them if needed,
+	# but clearing data should be enough if they react to it.
+	# Actually, tabs might need to know session started to reset their UI state (like filters).
+	# For now, let's rely on them clearing when data is cleared or explicitly calling clear if they have it.
+
+	if debugger_tab.has_method("clear_all_data"):
+		debugger_tab.clear_all_data()
+
+	if component_journal.has_method("reset_session"):
 		component_journal.reset_session()
+
+	# debugger_tab.active = true # Managed internally or by data presence
 
 
 func _on_session_stopped():
 	print("GECS Debug Session stopped")
-	debugger_tab.active = false
+	# debugger_tab.active = false

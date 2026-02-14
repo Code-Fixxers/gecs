@@ -9,15 +9,13 @@ extends Control
 ## entities match. A second tab diagnoses why a specific entity does or does
 ## not match a given query by showing per-condition pass/fail results.
 ##
-## Data is fed externally via [method set_ecs_data] which accepts the same
-## dictionary structure used by [GECSEditorDebuggerTab].
+## Data is fed externally via [method set_editor_data].
 
 # ---------------------------------------------------------------------------
 # External data source
 # ---------------------------------------------------------------------------
 
-## The full ecs_data dictionary mirrored from the debugger tab.
-var _ecs_data: Dictionary = {}
+var _editor_data: GECSEditorData = null
 
 ## Extracted unique component type names mapped to their occurrence count.
 ## e.g. { "C_Health": 3, "C_Velocity": 2, ... }
@@ -74,44 +72,76 @@ func _ready() -> void:
 	_build_ui()
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
+func set_editor_data(data: GECSEditorData) -> void:
+	_editor_data = data
+	if not _editor_data:
+		return
 
-## Main entry point for receiving runtime ECS data from the debugger.
-## Call this whenever the data is refreshed.
-func set_ecs_data(data: Dictionary) -> void:
-	_ecs_data = data
+	# Connect signals
+	if not _editor_data.entity_added.is_connected(_on_entity_added):
+		_editor_data.entity_added.connect(_on_entity_added)
+	if not _editor_data.entity_removed.is_connected(_on_entity_removed):
+		_editor_data.entity_removed.connect(_on_entity_removed)
+	if not _editor_data.component_added.is_connected(_on_component_added):
+		_editor_data.component_added.connect(_on_component_added)
+	if not _editor_data.component_removed.is_connected(_on_component_removed):
+		_editor_data.component_removed.connect(_on_component_removed)
+	if not _editor_data.set_world.is_connected(_on_world_reset):
+		_editor_data.set_world.connect(_on_world_reset)
+	if not _editor_data.world_init.is_connected(_on_world_reset):
+		_editor_data.world_init.connect(_on_world_reset)
+
+	# Initial build
 	_rebuild_component_index()
 	_refresh_component_lists()
 	_refresh_entity_selector()
 
 
-## Register a mapping from a component instance id to its script path.
-## The class name is extracted from the path (e.g. "res://comps/C_Health.gd"
-## becomes "C_Health").
-func set_component_metadata(comp_id: int, comp_path: String) -> void:
-	var class_name_str := _extract_class_name(comp_path)
-	_component_names[comp_id] = class_name_str
+# ---------------------------------------------------------------------------
+# Signal Handlers
+# ---------------------------------------------------------------------------
+
+func _on_world_reset(_id, _path):
+	_rebuild_component_index()
+	_refresh_component_lists()
+	_refresh_entity_selector()
 
 
-## Register an entity-component association so the playground knows which
-## components an entity currently has.
-func register_entity_component(ent_id: int, comp_id: int, comp_path: String) -> void:
-	var comp_name := _extract_class_name(comp_path)
-	_component_names[comp_id] = comp_name
-	if not _entity_component_names.has(ent_id):
-		_entity_component_names[ent_id] = []
-	if comp_name not in _entity_component_names[ent_id]:
-		_entity_component_names[ent_id].append(comp_name)
-	_available_components[comp_name] = _available_components.get(comp_name, 0) + 1
+func _on_entity_added(entity_id: int, path: NodePath):
+	_entity_paths[entity_id] = path
+	_refresh_entity_selector()
 
 
-## Remove an entity-component association.
-func unregister_entity_component(ent_id: int, comp_id: int) -> void:
-	var comp_name: String = _component_names.get(comp_id, "")
-	if comp_name != "" and _entity_component_names.has(ent_id):
-		_entity_component_names[ent_id].erase(comp_name)
+func _on_entity_removed(entity_id: int, _path: NodePath):
+	_entity_paths.erase(entity_id)
+	_entity_component_names.erase(entity_id)
+	_refresh_entity_selector()
+
+
+func _on_component_added(entity_id: int, component_id: int, component_path: String, _data: Dictionary):
+	var comp_name := _extract_class_name(component_path)
+	_component_names[component_id] = comp_name
+
+	if not _entity_component_names.has(entity_id):
+		_entity_component_names[entity_id] = []
+
+	if comp_name not in _entity_component_names[entity_id]:
+		_entity_component_names[entity_id].append(comp_name)
+		_available_components[comp_name] = _available_components.get(comp_name, 0) + 1
+		_refresh_component_lists()
+
+
+func _on_component_removed(entity_id: int, component_id: int):
+	var comp_name: String = _component_names.get(component_id, "")
+	if comp_name != "" and _entity_component_names.has(entity_id):
+		if comp_name in _entity_component_names[entity_id]:
+			_entity_component_names[entity_id].erase(comp_name)
+			if _available_components.has(comp_name):
+				_available_components[comp_name] -= 1
+				if _available_components[comp_name] <= 0:
+					_available_components.erase(comp_name)
+			_refresh_component_lists()
+
 
 # ---------------------------------------------------------------------------
 # UI Construction
@@ -300,16 +330,17 @@ func _create_component_list_column(parent: HBoxContainer, title: String, tooltip
 # Data Indexing
 # ---------------------------------------------------------------------------
 
-## Scans _ecs_data to rebuild the component index and entity-component map.
-## This is called whenever set_ecs_data is invoked so the playground stays
-## in sync with live game state.
+## Scans editor_data.ecs_data to rebuild the component index and entity-component map.
 func _rebuild_component_index() -> void:
 	_available_components.clear()
 	_entity_component_names.clear()
 	_entity_paths.clear()
 	_component_names.clear()
 
-	var entities: Dictionary = _ecs_data.get("entities", {})
+	if not _editor_data:
+		return
+
+	var entities: Dictionary = _editor_data.ecs_data.get("entities", {})
 	for ent_id in entities:
 		var ent_data: Dictionary = entities[ent_id]
 		var ent_path = ent_data.get("path", "")
@@ -318,18 +349,19 @@ func _rebuild_component_index() -> void:
 		var comp_names_for_entity: Array = []
 		var components: Dictionary = ent_data.get("components", {})
 
-		# We need to recover the component class name.  In the debugger tab the
-		# tree items carry "component_path" metadata, but the raw ecs_data only
-		# stores component instance id -> serialized data.  To work around this
-		# we also accept external registration via register_entity_component().
-		# If that mapping already exists, use it.  Otherwise fall back to
-		# whatever _component_names has from prior set_component_metadata calls.
 		for comp_id in components:
-			var comp_name: String = _component_names.get(comp_id, "")
-			if comp_name == "":
-				# Last resort: use the integer id as a string placeholder so we
-				# at least show something.
-				comp_name = "Component_%s" % str(comp_id)
+			var comp_entry = components[comp_id]
+			# Handle both new structure (dict with path) and potential legacy (raw dict, though we aim for new)
+			var comp_path = ""
+			if comp_entry.has("path"):
+				comp_path = comp_entry["path"]
+			else:
+				# Should not happen with new GECSEditorData, but defensive coding
+				comp_path = "UnknownComponent"
+
+			var comp_name: String = _extract_class_name(comp_path)
+			_component_names[comp_id] = comp_name
+
 			if comp_name not in comp_names_for_entity:
 				comp_names_for_entity.append(comp_name)
 			_available_components[comp_name] = _available_components.get(comp_name, 0) + 1
@@ -374,7 +406,10 @@ func _refresh_entity_selector() -> void:
 
 	_entity_selector.clear()
 
-	var entities: Dictionary = _ecs_data.get("entities", {})
+	if not _editor_data:
+		return
+
+	var entities: Dictionary = _editor_data.ecs_data.get("entities", {})
 	var sorted_ids: Array = entities.keys()
 	sorted_ids.sort()
 
@@ -425,7 +460,9 @@ func _execute_query() -> void:
 		return
 
 	var matching_entities: Array = []
-	var entities: Dictionary = _ecs_data.get("entities", {})
+	if not _editor_data:
+		return
+	var entities: Dictionary = _editor_data.ecs_data.get("entities", {})
 
 	for ent_id in entities:
 		var ent_comp_names: Array = _get_entity_component_names(ent_id)
@@ -466,8 +503,11 @@ func _display_query_results(matching_ids: Array) -> void:
 	_results_tree.clear()
 	var root := _results_tree.create_item()
 
+	if not _editor_data:
+		return
+
 	for ent_id in matching_ids:
-		var ent_data: Dictionary = _ecs_data.get("entities", {}).get(ent_id, {})
+		var ent_data: Dictionary = _editor_data.ecs_data.get("entities", {}).get(ent_id, {})
 		var path = ent_data.get("path", "")
 		var display_name: String = str(path).get_file() if str(path) != "" else "Entity_%s" % str(ent_id)
 
@@ -487,7 +527,7 @@ func _display_query_results(matching_ids: Array) -> void:
 		item.collapsed = true
 
 	# Update match count label.
-	var total_entities: int = _ecs_data.get("entities", {}).size()
+	var total_entities: int = _editor_data.ecs_data.get("entities", {}).size()
 	_match_count_label.text = "%d / %d entities matched" % [matching_ids.size(), total_entities]
 	if matching_ids.size() > 0:
 		_match_count_label.add_theme_color_override("font_color", COLOR_PASS)
@@ -660,7 +700,6 @@ func _get_selected_items(item_list: ItemList) -> Array:
 
 
 ## Returns the list of component class names for a given entity id.
-## Tries the local cache first, then falls back to scanning ecs_data.
 func _get_entity_component_names(ent_id: int) -> Array:
 	if _entity_component_names.has(ent_id):
 		return _entity_component_names[ent_id]
