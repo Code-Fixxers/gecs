@@ -237,6 +237,10 @@ func handle_spawn_entity(data: Dictionary) -> void:
 		if not script:
 			continue
 		var new_comp = script.new()
+		if not new_comp is Component:
+			push_warning("[NetworkSync] Script is not a Component: %s" % script_path)
+			continue
+
 		_ns._applying_network_data = true
 		entity.add_component(new_comp)
 		_ns._applying_network_data = false
@@ -453,6 +457,9 @@ func handle_add_component(
 		return
 
 	var new_component = script.new()
+	if not new_component is Component:
+		push_warning("[NetworkSync] Script is not a Component: %s" % script_path)
+		return
 
 	# Add with sync loop prevention
 	_ns._applying_network_data = true
