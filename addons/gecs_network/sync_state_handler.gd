@@ -277,6 +277,10 @@ func handle_sync_full_state(state: Dictionary) -> void:
 				continue
 
 			var new_comp = script.new()
+			if not new_comp is Component:
+				push_warning("[RECONCILIATION] Script is not a Component for %s: %s" % [comp_type, script_path])
+				continue
+
 			_ns._applying_network_data = true
 			entity.add_component(new_comp)
 			_ns._applying_network_data = false
