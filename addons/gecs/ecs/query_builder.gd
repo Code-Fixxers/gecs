@@ -416,6 +416,25 @@ func matches(entities: Array) -> Array:
 					matches = false
 					break
 
+		# Check required groups
+		if matches and not _groups.is_empty():
+			for group in _groups:
+				if not entity.is_in_group(group):
+					matches = false
+					break
+
+		# Check excluded groups
+		if matches and not _exclude_groups.is_empty():
+			for group in _exclude_groups:
+				if entity.is_in_group(group):
+					matches = false
+					break
+
+		# Check enabled filter
+		if matches and _enabled_filter != null:
+			if entity.enabled != _enabled_filter:
+				matches = false
+
 		if matches:
 			result.append(entity)
 
@@ -453,6 +472,9 @@ func is_empty() -> bool:
 		and _exclude_components.is_empty()
 		and _relationships.is_empty()
 		and _exclude_relationships.is_empty()
+		and _groups.is_empty()
+		and _exclude_groups.is_empty()
+		and _enabled_filter == null
 	)
 
 

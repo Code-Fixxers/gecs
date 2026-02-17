@@ -389,6 +389,8 @@ func _query_has_non_structural_filters(qb: QueryBuilder) -> bool:
 		return true
 	if not qb._exclude_groups.is_empty():
 		return true
+	if qb._enabled_filter != null:
+		return true
 	# Component property queries (ensure actual queries, not placeholders)
 	if not qb._all_components_queries.is_empty():
 		for query in qb._all_components_queries:
@@ -436,6 +438,9 @@ func _filter_entities_global(qb: QueryBuilder, entities: Array[Entity]) -> Array
 			for g in qb._exclude_groups:
 				if e.is_in_group(g):
 					include = false; break
+		if include and qb._enabled_filter != null:
+			if e.enabled != qb._enabled_filter:
+				include = false
 		if include and not qb._all_components_queries.is_empty():
 			for i in range(qb._all_components.size()):
 				if i >= qb._all_components_queries.size():
