@@ -8,7 +8,7 @@ extends Entity
 func define_components() -> Array:
 	return [
 		# Server-owned (peer_id = 0)
-		C_NetworkIdentity.new(0),
+		CN_NetworkIdentity.new(0),
 		C_Projectile.new(),
 		C_NetVelocity.new(),
 		C_NetPosition.new(),  # Position synced at spawn

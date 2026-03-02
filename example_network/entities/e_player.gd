@@ -17,7 +17,7 @@ func _enter_tree() -> void:
 
 func on_ready() -> void:
 	# Add network identity based on owner_peer_id
-	add_component(C_NetworkIdentity.new(owner_peer_id))
+	add_component(CN_NetworkIdentity.new(owner_peer_id))
 
 
 func define_components() -> Array:

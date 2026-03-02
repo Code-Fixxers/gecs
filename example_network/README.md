@@ -24,7 +24,7 @@ Projectiles do NOT have `C_SyncEntity`. The server spawns them and broadcasts co
 # e_projectile.gd
 func define_components() -> Array:
 	return [
-		C_NetworkIdentity.new(0),  # Server-owned
+		CN_NetworkIdentity.new(0),  # Server-owned
 		C_Projectile.new(),
 		C_NetVelocity.new(),
 		C_NetPosition.new(),       # Position synced at spawn
