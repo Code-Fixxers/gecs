@@ -14,7 +14,7 @@ config/name="GECS"
 config/description="Godot Entity Component System - Example project and testing suite"
 config/version="5.0.0"
 run/main_scene="uid://x5ubiio43y7w"
-config/features=PackedStringArray("4.6", "Forward Plus")
+config/features=PackedStringArray("4.5", "Forward Plus")
 
 [audio]
 
