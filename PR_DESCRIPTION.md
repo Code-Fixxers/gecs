@@ -75,8 +75,8 @@ func _init() -> void:
 
 ### Components
 - `C_NetworkIdentity` - Authority and ownership tracking
-- `C_SyncEntity` - Enables continuous synchronization
-- `C_LocalAuthority` - Marker for locally controlled entities
+- `CN_SyncEntity` - Enables continuous synchronization
+- `CN_LocalAuthority` - Marker for locally controlled entities
 - `C_RemoteEntity` - Marker for remotely controlled entities
 - `C_ServerOwned` - Marker for server-owned entities
 
