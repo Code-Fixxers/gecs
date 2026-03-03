@@ -78,23 +78,7 @@ func before():
 
 func after_test():
 	if world:
-		# Clear systems
-		for group in world.systems_by_group.keys():
-			world.systems_by_group[group].clear()
-		# Clear entities array (entities are auto_free'd by gdUnit)
-		world.entities.clear()
-		# Clear relationship indexes
-		world.relationship_entity_index.clear()
-		world.reverse_relationship_index.clear()
-		# Clear archetype system to prevent stale entity references across tests
-		for archetype in world.archetypes.values():
-			archetype.add_edges.clear()
-			archetype.remove_edges.clear()
-		world.archetypes.clear()
-		world.entity_to_archetype.clear()
-		# Clear query cache and entity ID registry
-		world._query_archetype_cache.clear()
-		world.entity_id_registry.clear()
+		world.purge(false)
 
 
 func test_per_system_flush_mode():
