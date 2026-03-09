@@ -639,8 +639,10 @@ func remove_system_group(group: String, topo_sort: bool = false) -> void:
 func purge(should_free = true, keep := []) -> void:
 	# Get rid of all entities
 	_worldLogger.debug("Purging Entities", entities)
-	for entity in entities.duplicate().filter(func(x): return not keep.has(x)):
+	for entity in entities.duplicate().filter(func(x): return is_instance_valid(x) and not keep.has(x)):
 		remove_entity(entity)
+	# Clear any remaining invalid references that couldn't be removed via remove_entity
+	entities.clear()
 
 	# Clear relationship indexes after purging entities
 	relationship_entity_index.clear()
