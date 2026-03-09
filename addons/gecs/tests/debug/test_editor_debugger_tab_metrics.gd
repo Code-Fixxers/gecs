@@ -1,7 +1,7 @@
 extends GdUnitTestSuite
 
 func test_system_metric_last_time_is_recorded() -> void:
-	var tab := preload("res://addons/gecs/debug/gecs_editor_debugger_tab.gd").new()
+	var tab := auto_free(preload("res://addons/gecs/debug/gecs_editor_debugger_tab.gd").new())
 	# Simulate three metric events for same system id
 	tab.system_metric(1, "TestSystem", 0.5)
 	tab.system_metric(1, "TestSystem", 0.25)

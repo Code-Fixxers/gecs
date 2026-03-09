@@ -78,23 +78,7 @@ func before():
 
 func after_test():
 	if world:
-		# Clear systems
-		for group in world.systems_by_group.keys():
-			world.systems_by_group[group].clear()
-		# Clear entities array (entities are auto_free'd by gdUnit)
-		world.entities.clear()
-		# Clear relationship indexes
-		world.relationship_entity_index.clear()
-		world.reverse_relationship_index.clear()
-		# Clear archetype system to prevent stale entity references across tests
-		for archetype in world.archetypes.values():
-			archetype.add_edges.clear()
-			archetype.remove_edges.clear()
-		world.archetypes.clear()
-		world.entity_to_archetype.clear()
-		# Clear query cache and entity ID registry
-		world._query_archetype_cache.clear()
-		world.entity_id_registry.clear()
+		world.purge(false)
 
 
 func test_per_system_flush_mode():
@@ -103,8 +87,8 @@ func test_per_system_flush_mode():
 	world.add_system(test_system)
 
 	# Create test entities
-	var entity1 = auto_free(TestA.new())
-	var entity2 = auto_free(TestA.new())
+	var entity1 = TestA.new()
+	var entity2 = TestA.new()
 	entity1.add_component(C_TestB.new())
 	entity2.add_component(C_TestB.new())
 
@@ -132,7 +116,7 @@ func test_per_group_flush_mode():
 	world.add_system(dependent_system)
 
 	# Create initial entity
-	var entity = auto_free(TestC.new())
+	var entity = TestC.new()
 	entity.add_component(C_TestC.new())
 	world.add_entity(entity)
 
@@ -159,7 +143,7 @@ func test_manual_flush_mode():
 	world.add_system(dependent_system)
 
 	# Create initial entity
-	var entity = auto_free(TestC.new())
+	var entity = TestC.new()
 	entity.add_component(C_TestC.new())
 	world.add_entity(entity)
 
@@ -193,8 +177,8 @@ func test_multiple_systems_per_system_mode():
 	world.add_system(system2)
 
 	# Create entities
-	var entity1 = auto_free(TestA.new())
-	var entity2 = auto_free(TestA.new())
+	var entity1 = TestA.new()
+	var entity2 = TestA.new()
 	entity1.add_component(C_TestB.new())
 	entity2.add_component(C_TestB.new())
 
@@ -220,11 +204,11 @@ func test_mixed_flush_modes():
 	world.add_system(per_group)
 
 	# Create entities
-	var entity1 = auto_free(TestA.new())
+	var entity1 = TestA.new()
 	entity1.add_component(C_TestB.new())
 	entity1.add_component(C_TestC.new())
 
-	var entity2 = auto_free(TestC.new())
+	var entity2 = TestC.new()
 	entity2.add_component(C_TestC.new())
 
 	world.add_entity(entity1)
@@ -248,7 +232,7 @@ func test_command_buffer_with_no_commands():
 	world.add_system(test_system)
 
 	# Create entity without C_TestB (won't be removed)
-	var entity = auto_free(TestA.new())
+	var entity = TestA.new()
 	world.add_entity(entity)
 
 	# Process

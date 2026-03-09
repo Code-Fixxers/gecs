@@ -38,6 +38,7 @@ enabled=PackedStringArray("res://addons/debug_menu/plugin.cfg", "res://addons/gd
 [gdunit4]
 
 ui/inspector/tree_view_mode=1
+settings/test/test_discovery=true
 
 [gecs]
 

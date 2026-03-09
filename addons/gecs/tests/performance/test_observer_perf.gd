@@ -83,7 +83,7 @@ func test_observer_component_removals(scale: int, test_parameters := [[100], [10
 	var observer = O_PerformanceTest.new()
 	world.add_observer(observer)
 
-	var entities = world.query.with_all([C_ObserverTest]).execute()
+	var entities = world.query.with_all([C_ObserverTest]).execute().duplicate()
 
 	var time_ms = PerfHelpers.time_it(func():
 		# Remove components (observers react to removals)

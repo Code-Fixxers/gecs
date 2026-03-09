@@ -11,6 +11,7 @@ func before_test():
 	ECS.world = world
 
 func after_test():
+	ECS.debug = true
 	ECS.world = null
 	if is_instance_valid(world):
 		world.queue_free()
