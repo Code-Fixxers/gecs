@@ -6,13 +6,13 @@
         <EditTextPreference
             app:key="server_url"
             app:title="@string/server_url"
-            app:summary="@string/server_url_summary"
+            app:useSimpleSummaryProvider="true"
             app:defaultValue="http://192.168.1.100:9000" />
 
         <EditTextPreference
             app:key="api_endpoint"
             app:title="@string/api_endpoint"
-            app:summary="@string/api_endpoint_summary"
+            app:useSimpleSummaryProvider="true"
             app:defaultValue="/asr" />
 
         <EditTextPreference
@@ -24,6 +24,7 @@
         <EditTextPreference
             app:key="connection_timeout"
             app:title="@string/connection_timeout"
+            app:useSimpleSummaryProvider="true"
             app:defaultValue="30" />
 
     </PreferenceCategory>
@@ -33,13 +34,13 @@
         <EditTextPreference
             app:key="language"
             app:title="@string/language"
-            app:summary="@string/language_summary"
+            app:useSimpleSummaryProvider="true"
             app:defaultValue="en" />
 
         <EditTextPreference
             app:key="output_format"
             app:title="@string/output_format"
-            app:summary="@string/output_format_summary"
+            app:useSimpleSummaryProvider="true"
             app:defaultValue="txt" />
 
         <SwitchPreferenceCompat
